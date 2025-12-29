@@ -1,0 +1,27 @@
+# Binaries
+xyaoled-daemon
+
+# Git
+.git
+.gitignore
+
+# Environment files
+.env
+.env.example
+
+# Documentation
+README.md
+
+# Build artifacts
+*.log
+*.tmp
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
