@@ -23,6 +23,9 @@ type Config struct {
 	// Debug settings
 	DebugBLE       bool
 	VerboseLogging bool
+
+	// Display orientation
+	UpsideDown bool
 }
 
 // LoadConfig loads configuration from .env file and environment variables
@@ -36,6 +39,7 @@ func LoadConfig() *Config {
 		HTTPHost:       "0.0.0.0",
 		DebugBLE:       false,
 		VerboseLogging: false,
+		UpsideDown:     false,
 	}
 
 	// Try to load .env, fall back to .env.example
@@ -88,6 +92,8 @@ func LoadConfig() *Config {
 				cfg.DebugBLE = value == "true"
 			case "VERBOSE_LOGGING":
 				cfg.VerboseLogging = value == "true"
+			case "UPSIDE_DOWN":
+				cfg.UpsideDown = value == "true"
 			}
 		}
 	}
@@ -122,6 +128,9 @@ func LoadConfig() *Config {
 	}
 	if val := os.Getenv("VERBOSE_LOGGING"); val != "" {
 		cfg.VerboseLogging = val == "true"
+	}
+	if val := os.Getenv("UPSIDE_DOWN"); val != "" {
+		cfg.UpsideDown = val == "true"
 	}
 
 	return cfg

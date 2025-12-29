@@ -263,11 +263,34 @@ func (d *Display) keepStaticImageAlive(gifData []byte, seq int) {
 
 // processImage resizes image to display dimensions and converts to optimized GIF
 func (d *Display) processImage(img image.Image) ([]byte, error) {
+	// Rotate 180 degrees if upside down
+	if d.config.UpsideDown {
+		img = d.rotate180(img)
+	}
+
 	// Resize to display dimensions
 	resized := d.resizeImage(img, d.width, d.height)
 
 	// Convert to GIF with custom palette
 	return d.imageToGif(resized)
+}
+
+// rotate180 rotates an image 180 degrees
+func (d *Display) rotate180(src image.Image) image.Image {
+	bounds := src.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			// 180 degree rotation: (x, y) -> (width-1-x, height-1-y)
+			dst.Set(width-1-x, height-1-y, src.At(bounds.Min.X+x, bounds.Min.Y+y))
+		}
+	}
+
+	return dst
 }
 
 // resizeImage resizes an image to the specified dimensions
