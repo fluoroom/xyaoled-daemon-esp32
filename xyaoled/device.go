@@ -3,8 +3,10 @@
 package xyaoled
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"image/gif"
 	"time"
 
 	"tinygo.org/x/bluetooth"
@@ -17,20 +19,29 @@ const (
 	notifyCharUUID = "ae02"
 
 	// Protocol constants
-	maxChunkSize  = 80
+	maxChunkSize  = 20
 	defaultSlot   = 0x07
+	staticSlot    = 0x04
 	maxBrightness = 100
 	minBrightness = 1
 
 	// Timing constants
 	initDelay        = 300 * time.Millisecond
 	commandDelay     = 30 * time.Millisecond
-	smallGifDelay    = 10 * time.Millisecond
-	largeGifDelay    = 15 * time.Millisecond
+	smallGifDelay    = 2 * time.Millisecond
+	largeGifDelay    = 4 * time.Millisecond
 	smallGifFinish   = 50 * time.Millisecond
 	largeGifFinish   = 100 * time.Millisecond
 	gifSizeThreshold = 300
+	burstPaceBytes   = 1024
+	burstPause       = 12 * time.Millisecond
 )
+
+// clearPlaybackSequence returns a command that stops/clears current playback
+// Reuses the initialization stop command observed to reset playback state.
+func clearPlaybackSequence() []byte {
+	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0f, 0x00, 0x0a, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00}
+}
 
 // Device represents a connection to an XYAOLED display
 type Device struct {
@@ -44,6 +55,19 @@ type Device struct {
 	slot          uint8
 	isBusy        bool
 	debug         bool
+}
+
+// SendOptions controls how GIF payloads are written to the device.
+// SkipClear avoids the pre-send playback clear (useful for refresh/keepalive
+// where the slot already contains the same content). BestEffortClear allows
+// proceeding even if the clear command fails (e.g., when the characteristic
+// write method temporarily reports unsupported), which prevents refresh loops
+// from failing while still attempting to stop prior playback.
+type SendOptions struct {
+	SkipClear       bool
+	BestEffortClear bool
+	ForceReinit     bool
+	StaticHeader    bool
 }
 
 // NewDevice creates a new XYAOLED device instance
@@ -520,9 +544,96 @@ func (d *Device) buildGifPacket(gifData []byte) []byte {
 	return packet
 }
 
-// SendGif sends a GIF buffer to the display
-// Ported from Node.js sendGif() method
+// buildStaticGifPacket constructs a packet using the static-image header observed in btlog3
+// Header (after length): 07 02 <slot> 88 30 00 03 00 00 01 70 03 20 00 02 00
+func (d *Device) buildStaticGifPacket(gifData []byte, slot byte) []byte {
+	header := []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88}
+
+	// Total size = header (6 + 2 len + 16 payload header) + gif data
+	headerFields := []byte{0x07, 0x02, slot, 0x88, 0x30, 0x00, 0x03, 0x00, 0x00, 0x01, 0x70, 0x03, 0x20, 0x00, 0x02, 0x00}
+	headerSize := len(header) + 2 + len(headerFields)
+	totalSize := headerSize + len(gifData)
+
+	packet := make([]byte, 0, totalSize)
+	packet = append(packet, header...)
+	packet = append(packet, uint8(totalSize&0xff), uint8((totalSize>>8)&0xff))
+	packet = append(packet, headerFields...)
+	packet = append(packet, gifData...)
+	return packet
+}
+
+// gifMeta holds basic metadata for pacing animated uploads
+type gifMeta struct {
+	frames   int
+	duration time.Duration
+}
+
+// parseGifMeta extracts frame count and total duration from a GIF buffer
+func parseGifMeta(buf []byte) (gifMeta, error) {
+	g, err := gif.DecodeAll(bytes.NewReader(buf))
+	if err != nil {
+		return gifMeta{}, err
+	}
+
+	meta := gifMeta{frames: len(g.Image)}
+	for _, d := range g.Delay {
+		meta.duration += time.Duration(d) * 10 * time.Millisecond // GIF delay units are 1/100s
+	}
+
+	// Fallback duration if delays were zeroed
+	if meta.duration == 0 && meta.frames > 0 {
+		meta.duration = time.Duration(meta.frames) * 100 * time.Millisecond
+	}
+
+	return meta, nil
+}
+
+// SendGif sends a GIF buffer to the display using default options
 func (d *Device) SendGif(gifBuffer []byte) error {
+	return d.SendGifWithOptions(gifBuffer, SendOptions{})
+}
+
+// SendGifWithOptions sends a GIF buffer with configurable behavior
+func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
+	// Defaults
+	if !opts.BestEffortClear {
+		opts.BestEffortClear = true
+	}
+
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := d.sendGifAttempt(gifBuffer, opts)
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if d.debug {
+			fmt.Printf("[BLE] Send attempt %d/%d failed: %v\n", attempt, maxRetries, err)
+		}
+
+		// Don't retry if device is not connected or is busy
+		if err.Error() == "device not connected" || err.Error() == "device is busy" {
+			return err
+		}
+
+		// Wait before retry with exponential backoff
+		if attempt < maxRetries {
+			waitTime := time.Duration(attempt*50) * time.Millisecond
+			if d.debug {
+				fmt.Printf("[BLE] Retrying in %v...\n", waitTime)
+			}
+			time.Sleep(waitTime)
+		}
+	}
+
+	return fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// sendGifAttempt performs a single attempt to send the GIF
+func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 	if !d.isConnected {
 		return errors.New("device not connected")
 	}
@@ -534,8 +645,13 @@ func (d *Device) SendGif(gifBuffer []byte) error {
 		return errors.New("device is busy")
 	}
 
+	meta, metaErr := parseGifMeta(gifBuffer)
 	if d.debug {
-		fmt.Printf("[BLE] Sending GIF: %d bytes (slot: 0x%02x)\n", len(gifBuffer), d.slot)
+		if metaErr == nil {
+			fmt.Printf("[BLE] Sending GIF: %d bytes, frames=%d, duration=%v (slot: 0x%02x)\n", len(gifBuffer), meta.frames, meta.duration, d.slot)
+		} else {
+			fmt.Printf("[BLE] Sending GIF: %d bytes (slot: 0x%02x), meta error: %v\n", len(gifBuffer), d.slot, metaErr)
+		}
 	}
 
 	d.isBusy = true
@@ -543,41 +659,73 @@ func (d *Device) SendGif(gifBuffer []byte) error {
 		d.isBusy = false
 	}()
 
-	// Select slot command
-	if d.debug {
-		fmt.Printf("[BLE] Selecting slot 0x%02x...\n", d.slot)
+	// Optionally rerun init handshake to flush any queued playlist/state
+	if opts.ForceReinit {
+		if d.debug {
+			fmt.Println("[BLE] Re-initializing device before send...")
+		}
+		if err := d.initialize(); err != nil {
+			return fmt.Errorf("failed to reinitialize device: %w", err)
+		}
 	}
-	selectSlot := []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0d, 0x00, 0x04, 0x02, d.slot, 0xff, 0x00}
+
+	// Clear/stop any previous playback to avoid old playlists continuing
+	if !opts.SkipClear {
+		if d.debug {
+			fmt.Println("[BLE] Clearing previous playback state...")
+		}
+		if err := d.send(clearPlaybackSequence()); err != nil {
+			if opts.BestEffortClear {
+				if d.debug {
+					fmt.Printf("[BLE] Clear playback failed (continuing): %v\n", err)
+				}
+			} else {
+				return fmt.Errorf("failed to clear playback: %w", err)
+			}
+		} else {
+			time.Sleep(commandDelay)
+		}
+	}
+
+	// Select slot command (use dedicated static slot when requested)
+	slot := d.slot
+	if opts.StaticHeader {
+		slot = staticSlot
+	}
+	if d.debug {
+		fmt.Printf("[BLE] Selecting slot 0x%02x...\n", slot)
+	}
+	selectSlot := []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0d, 0x00, 0x04, 0x02, slot, 0xff, 0x00}
 	if err := d.send(selectSlot); err != nil {
 		return fmt.Errorf("failed to select slot: %w", err)
 	}
 	time.Sleep(commandDelay)
 
-	// Build complete packet
-	packet := d.buildGifPacket(gifBuffer)
+	// Build complete packet (static vs animated/header style)
+	var packet []byte
+	if opts.StaticHeader {
+		packet = d.buildStaticGifPacket(gifBuffer, slot)
+	} else {
+		packet = d.buildGifPacket(gifBuffer)
+	}
 
 	if d.debug {
 		fmt.Printf("[BLE] Built packet: %d bytes total (header: 24, data: %d)\n", len(packet), len(gifBuffer))
 	}
 
-	// Determine chunk delay based on GIF size
+	// Determine chunk delay based on GIF size (short, vendor-like pacing)
 	var chunkDelay time.Duration
 	if len(gifBuffer) > gifSizeThreshold {
 		chunkDelay = largeGifDelay
-		if d.debug {
-			fmt.Printf("[BLE] Using large GIF timing (%v per chunk)\n", chunkDelay)
-		}
 	} else {
 		chunkDelay = smallGifDelay
-		if d.debug {
-			fmt.Printf("[BLE] Using small GIF timing (%v per chunk)\n", chunkDelay)
-		}
 	}
 
-	// Send packet in chunks
+	// Send packet in smaller ATT-sized chunks with periodic pauses to mimic vendor pacing
 	offset := 0
 	chunkNum := 0
 	totalChunks := (len(packet) + maxChunkSize - 1) / maxChunkSize
+	bytesSincePause := 0
 
 	for offset < len(packet) {
 		end := offset + maxChunkSize
@@ -597,7 +745,17 @@ func (d *Device) SendGif(gifBuffer []byte) error {
 		}
 
 		offset += maxChunkSize
+		bytesSincePause += len(chunk)
+
 		time.Sleep(chunkDelay)
+
+		if bytesSincePause >= burstPaceBytes {
+			if d.debug {
+				fmt.Printf("[BLE] Pausing %v after %d bytes to match vendor pacing...\n", burstPause, bytesSincePause)
+			}
+			time.Sleep(burstPause)
+			bytesSincePause = 0
+		}
 	}
 
 	// Wait for device to finish processing
@@ -605,17 +763,19 @@ func (d *Device) SendGif(gifBuffer []byte) error {
 		fmt.Println("[BLE] All chunks sent, waiting for device to process...")
 	}
 
+	finishWait := smallGifFinish
 	if len(gifBuffer) > 500 {
-		if d.debug {
-			fmt.Printf("[BLE] Waiting %v (large GIF)...\n", largeGifFinish)
-		}
-		time.Sleep(largeGifFinish)
-	} else {
-		if d.debug {
-			fmt.Printf("[BLE] Waiting %v (small GIF)...\n", smallGifFinish)
-		}
-		time.Sleep(smallGifFinish)
+		finishWait = largeGifFinish
 	}
+	if metaErr == nil && meta.frames > 1 {
+		// Ensure the device has time to stage the full animation; add a small buffer
+		finishWait = meta.duration + 150*time.Millisecond
+	}
+
+	if d.debug {
+		fmt.Printf("[BLE] Waiting %v for device processing...\n", finishWait)
+	}
+	time.Sleep(finishWait)
 
 	if d.debug {
 		fmt.Println("[BLE] ✓ GIF sent successfully!")

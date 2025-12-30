@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"log"
 	"os"
+	"sync"
 	"time"
 	"xyaoled-daemon/xyaoled"
 
@@ -29,8 +30,28 @@ type Display struct {
 	animationSeq         int
 	config               *Config
 	reconnecting         bool
-	lastGifData          []byte // Store last displayed content for redisplay after reconnect
-	lastGifIsAnim        bool   // Track if last content was animated
+	lastGifData          []byte     // Store last displayed content for redisplay after reconnect
+	lastGifIsAnim        bool       // Track if last content was animated
+	sendMutex            sync.Mutex // Prevent concurrent sends to device
+}
+
+// sendBlackFrame clears the panel with a black full-screen frame
+func (d *Display) sendBlackFrame() error {
+	img := image.NewRGBA(image.Rect(0, 0, d.width, d.height))
+	// fill opaque black
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 0
+		img.Pix[i+1] = 0
+		img.Pix[i+2] = 0
+		img.Pix[i+3] = 255
+	}
+	gifData, err := d.imageToGif(img)
+	if err != nil {
+		return err
+	}
+	d.sendMutex.Lock()
+	defer d.sendMutex.Unlock()
+	return d.device.SendGif(gifData)
 }
 
 // NewDisplay creates a new display instance
@@ -104,8 +125,12 @@ func (d *Display) loadAndDisplayDefaultGif() error {
 		return fmt.Errorf("failed to process default.gif: %w", err)
 	}
 
-	// Send to device once (no animation)
-	if err := d.device.SendGif(gifData); err != nil {
+	// Send to device once (no animation) with static header; skip clear to match vendor behavior
+	d.sendMutex.Lock()
+	err = d.device.SendGifWithOptions(gifData, xyaoled.SendOptions{StaticHeader: true, SkipClear: true})
+	d.sendMutex.Unlock()
+
+	if err != nil {
 		return fmt.Errorf("failed to send default.gif: %w", err)
 	}
 
@@ -131,6 +156,11 @@ func (d *Display) ShowImage(base64Data string) error {
 		log.Printf("[Display] Decoded %s image: %dx%d", format, img.Bounds().Dx(), img.Bounds().Dy())
 	}
 
+	// Clear previous content with a black frame (match animated path)
+	if err := d.sendBlackFrame(); err != nil {
+		log.Printf("Warning: failed to clear panel before static image: %v", err)
+	}
+
 	// Resize and convert to GIF
 	gifData, err := d.processImage(img)
 	if err != nil {
@@ -141,13 +171,16 @@ func (d *Display) ShowImage(base64Data string) error {
 	d.lastGifData = gifData
 	d.lastGifIsAnim = false
 
-	// Stop any running animation
+	// Stop any running animation/refresh loops
 	d.animationSeq++
-	seq := d.animationSeq
 
-	// Static images need to be re-sent periodically to stay on screen
-	// Start a goroutine that keeps refreshing the static image
-	go d.keepStaticImageAlive(gifData, seq)
+	// Send once with reinit to flush any queued playlist/state (same approach as animated)
+	d.sendMutex.Lock()
+	sendErr := d.device.SendGifWithOptions(gifData, xyaoled.SendOptions{ForceReinit: true})
+	d.sendMutex.Unlock()
+	if sendErr != nil {
+		return fmt.Errorf("failed to send static image: %w", sendErr)
+	}
 
 	return nil
 }
@@ -170,95 +203,33 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 		log.Printf("[Display] Decoded animated GIF: %d frames", len(gifImg.Image))
 	}
 
-	// Store last content for reconnection
-	d.lastGifData = imgData
+	// Clear previous content with a black frame
+	if err := d.sendBlackFrame(); err != nil {
+		log.Printf("Warning: failed to clear panel before animation: %v", err)
+	}
+
+	// Process and re-encode with sizing/rotation while preserving delays/looping
+	processedGif, err := d.processAnimatedGif(gifImg)
+	if err != nil {
+		return fmt.Errorf("failed to process animated GIF: %w", err)
+	}
+
+	// Stop any running animation/refresh loops
+	d.animationSeq++
+
+	// Store last content for reconnection (processed form)
+	d.lastGifData = processedGif
 	d.lastGifIsAnim = true
 
-	// Play animation at global FPS
-	d.animationSeq++
-	seq := d.animationSeq
-
-	go d.playAnimation(gifImg, seq)
+	// Send once with reinit to flush any queued playlist/state; LoopCount was forced to 0 in processing
+	d.sendMutex.Lock()
+	err = d.device.SendGifWithOptions(processedGif, xyaoled.SendOptions{ForceReinit: true})
+	d.sendMutex.Unlock()
+	if err != nil {
+		return fmt.Errorf("failed to send animated GIF: %w", err)
+	}
 
 	return nil
-}
-
-// playAnimation plays an animated GIF at the global FPS rate
-func (d *Display) playAnimation(gifImg *gif.GIF, seq int) {
-	ticker := time.NewTicker(d.frameDelay)
-	defer ticker.Stop()
-
-	frameIdx := 0
-	for range ticker.C {
-		// Check if this animation is still current
-		if seq != d.animationSeq {
-			if d.debugBLE {
-				log.Printf("[Display] Animation %d interrupted", seq)
-			}
-			return
-		}
-
-		// Get frame
-		frame := gifImg.Image[frameIdx]
-
-		// Convert paletted image to RGBA
-		bounds := frame.Bounds()
-		rgba := image.NewRGBA(bounds)
-		draw.Draw(rgba, bounds, frame, bounds.Min, draw.Src)
-
-		// Process and send
-		gifData, err := d.processImage(rgba)
-		if err != nil {
-			log.Printf("Error processing frame %d: %v", frameIdx, err)
-			return
-		}
-
-		err = d.device.SendGif(gifData)
-		if err != nil {
-			log.Printf("Error sending frame %d: %v (will attempt reconnection)", frameIdx, err)
-			// Trigger reconnection
-			go d.attemptReconnection()
-			return
-		}
-
-		// Move to next frame
-		frameIdx = (frameIdx + 1) % len(gifImg.Image)
-	}
-}
-
-// keepStaticImageAlive periodically resends a static image to keep it displayed
-func (d *Display) keepStaticImageAlive(gifData []byte, seq int) {
-	// Send immediately
-	if err := d.device.SendGif(gifData); err != nil {
-		log.Printf("Error sending static image: %v", err)
-		go d.attemptReconnection()
-		return
-	}
-
-	// Then resend every 30 seconds to keep it alive
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		// Check if this image is still current
-		if seq != d.animationSeq {
-			if d.debugBLE {
-				log.Printf("[Display] Static image %d interrupted", seq)
-			}
-			return
-		}
-
-		// Resend the image
-		if err := d.device.SendGif(gifData); err != nil {
-			log.Printf("Error refreshing static image: %v", err)
-			go d.attemptReconnection()
-			return
-		}
-
-		if d.debugBLE {
-			log.Println("[Display] Static image refreshed")
-		}
-	}
 }
 
 // processImage resizes image to display dimensions and converts to optimized GIF
@@ -271,15 +242,91 @@ func (d *Display) processImage(img image.Image) ([]byte, error) {
 		if d.debugBLE {
 			log.Println("[Display] Rotating image 180 degrees (UPSIDE_DOWN=true)")
 		}
-		resized = d.rotate180(resized)
+		resized = rotate180(resized)
 	}
 
 	// Convert to GIF with custom palette
 	return d.imageToGif(resized)
 }
 
+// processAnimatedGif resizes all frames, applies optional rotation, and re-encodes preserving delays/looping
+func (d *Display) processAnimatedGif(src *gif.GIF) ([]byte, error) {
+	var out gif.GIF
+	out.LoopCount = 0 // Always loop forever; the device ignores non-zero loop counts for repeat, so force 0 (infinite)
+
+	// Fallback delay derived from configured frameDelay (centiseconds)
+	fallbackDelay := 5 // Fallback delay (centiseconds) for frames with zero delay; use a small sane default (50ms)
+
+	for i, frame := range src.Image {
+		// Convert paletted frame to RGBA and flatten over opaque black to avoid transparency bleed
+		bounds := frame.Bounds()
+		rgba := image.NewRGBA(bounds)
+		for i := 0; i < len(rgba.Pix); i += 4 {
+			rgba.Pix[i] = 0
+			rgba.Pix[i+1] = 0
+			rgba.Pix[i+2] = 0
+			rgba.Pix[i+3] = 255
+		}
+		draw.Draw(rgba, bounds, frame, bounds.Min, draw.Over)
+
+		processed := d.resizeImage(rgba, d.width, d.height)
+		if d.config.UpsideDown {
+			processed = rotate180(processed)
+		}
+
+		// Build palette up to 256 colors
+		colorMap := make(map[color.RGBA]bool)
+		prgba, ok := processed.(*image.RGBA)
+		if !ok {
+			// ensure RGBA
+			tmp := image.NewRGBA(processed.Bounds())
+			draw.Draw(tmp, processed.Bounds(), processed, processed.Bounds().Min, draw.Src)
+			prgba = tmp
+		}
+
+		pix := prgba.Pix
+		stride := prgba.Stride
+		rect := prgba.Rect
+		for y := rect.Min.Y; y < rect.Max.Y && len(colorMap) < 256; y++ {
+			for x := rect.Min.X; x < rect.Max.X && len(colorMap) < 256; x++ {
+				i := (y-rect.Min.Y)*stride + (x-rect.Min.X)*4
+				col := color.RGBA{R: pix[i], G: pix[i+1], B: pix[i+2], A: pix[i+3]}
+				colorMap[col] = true
+			}
+		}
+
+		palette := make(color.Palette, 0, len(colorMap))
+		for col := range colorMap {
+			palette = append(palette, col)
+			if len(palette) >= 256 {
+				break
+			}
+		}
+		if len(palette) == 0 {
+			palette = append(palette, color.RGBA{0, 0, 0, 255})
+		}
+
+		paletted := image.NewPaletted(processed.Bounds(), palette)
+		draw.FloydSteinberg.Draw(paletted, processed.Bounds(), processed, image.Point{})
+
+		out.Image = append(out.Image, paletted)
+		out.Disposal = append(out.Disposal, gif.DisposalBackground)
+		delay := src.Delay[i]
+		if delay == 0 {
+			delay = fallbackDelay
+		}
+		out.Delay = append(out.Delay, delay)
+	}
+
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, &out); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // rotate180 rotates an image 180 degrees
-func (d *Display) rotate180(src image.Image) image.Image {
+func rotate180(src image.Image) image.Image {
 	bounds := src.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
@@ -315,11 +362,13 @@ func (d *Display) resizeImage(src image.Image, width, height int) image.Image {
 	newWidth := int(float64(srcWidth) * scale)
 	newHeight := int(float64(srcHeight) * scale)
 
-	// Create black background at target size
+	// Create black background at target size (opaque)
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	// Fill with black (already zero-initialized, but explicit for clarity)
-	for i := range dst.Pix {
+	for i := 0; i < len(dst.Pix); i += 4 {
 		dst.Pix[i] = 0
+		dst.Pix[i+1] = 0
+		dst.Pix[i+2] = 0
+		dst.Pix[i+3] = 255
 	}
 
 	// Calculate offset to center the scaled image
@@ -398,13 +447,11 @@ func (d *Display) imageToGif(img image.Image) ([]byte, error) {
 	draw.FloydSteinberg.Draw(paletted, bounds, rgbaImg, image.Point{})
 
 	// Encode as GIF
-	// For static single-frame images, use a very large delay to prevent flickering
-	// 36000 hundredths = 360 seconds = 6 minutes (device will keep frame displayed)
-	// LoopCount of 0 means loop forever, but with large delay it won't flicker
+	// Use a short delay similar to vendor static send (e.g., ~90ms) and rely on keepalive for persistence
 	gifImage := &gif.GIF{
 		Image:     []*image.Paletted{paletted},
-		Delay:     []int{36000}, // 6 minutes - effectively static
-		LoopCount: 0,            // Loop forever (but delay is so long it appears static)
+		Delay:     []int{60000}, // centiseconds (10 minutes) to avoid visible blinking
+		LoopCount: 0,            // loop forever (but effectively static due to long delay)
 	}
 
 	err := gif.EncodeAll(&buf, gifImage)
@@ -482,21 +529,19 @@ func (d *Display) attemptReconnection() {
 		// Redisplay last content if available
 		if d.lastGifData != nil {
 			log.Println("Restoring last displayed content...")
-			if d.lastGifIsAnim {
-				// Replay the animation
-				d.animationSeq++
-				seq := d.animationSeq
-				// Decode the GIF to get frames
-				gifImg, err := gif.DecodeAll(bytes.NewReader(d.lastGifData))
-				if err == nil {
-					go d.playAnimation(gifImg, seq)
+			// Replay once (animated or static) using same send options as primary paths
+			d.animationSeq++
+			go func(data []byte, isAnim bool) {
+				d.sendMutex.Lock()
+				defer d.sendMutex.Unlock()
+				if err := d.device.SendGifWithOptions(data, xyaoled.SendOptions{ForceReinit: true}); err != nil {
+					if isAnim {
+						log.Printf("Error restoring animated content: %v", err)
+					} else {
+						log.Printf("Error restoring static content: %v", err)
+					}
 				}
-			} else {
-				// Redisplay static image with keep-alive
-				d.animationSeq++
-				seq := d.animationSeq
-				go d.keepStaticImageAlive(d.lastGifData, seq)
-			}
+			}(d.lastGifData, d.lastGifIsAnim)
 		} else {
 			// Load default.gif if no last content
 			if err := d.loadAndDisplayDefaultGif(); err != nil {
