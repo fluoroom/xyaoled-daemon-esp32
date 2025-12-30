@@ -263,13 +263,16 @@ func (d *Display) keepStaticImageAlive(gifData []byte, seq int) {
 
 // processImage resizes image to display dimensions and converts to optimized GIF
 func (d *Display) processImage(img image.Image) ([]byte, error) {
-	// Rotate 180 degrees if upside down
-	if d.config.UpsideDown {
-		img = d.rotate180(img)
-	}
-
-	// Resize to display dimensions
+	// Resize to display dimensions first
 	resized := d.resizeImage(img, d.width, d.height)
+
+	// Rotate 180 degrees if upside down (after resizing so letterboxing is correct)
+	if d.config.UpsideDown {
+		if d.debugBLE {
+			log.Println("[Display] Rotating image 180 degrees (UPSIDE_DOWN=true)")
+		}
+		resized = d.rotate180(resized)
+	}
 
 	// Convert to GIF with custom palette
 	return d.imageToGif(resized)
@@ -293,10 +296,40 @@ func (d *Display) rotate180(src image.Image) image.Image {
 	return dst
 }
 
-// resizeImage resizes an image to the specified dimensions
+// resizeImage resizes an image to fit within the specified dimensions (contain mode)
+// Maintains aspect ratio and centers the image on a black background
 func (d *Display) resizeImage(src image.Image, width, height int) image.Image {
+	srcBounds := src.Bounds()
+	srcWidth := srcBounds.Dx()
+	srcHeight := srcBounds.Dy()
+
+	// Calculate scaling factor to fit within bounds (contain)
+	scaleX := float64(width) / float64(srcWidth)
+	scaleY := float64(height) / float64(srcHeight)
+	scale := scaleX
+	if scaleY < scaleX {
+		scale = scaleY
+	}
+
+	// Calculate new dimensions maintaining aspect ratio
+	newWidth := int(float64(srcWidth) * scale)
+	newHeight := int(float64(srcHeight) * scale)
+
+	// Create black background at target size
 	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-	draw.NearestNeighbor.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+	// Fill with black (already zero-initialized, but explicit for clarity)
+	for i := range dst.Pix {
+		dst.Pix[i] = 0
+	}
+
+	// Calculate offset to center the scaled image
+	offsetX := (width - newWidth) / 2
+	offsetY := (height - newHeight) / 2
+
+	// Scale and draw the image centered
+	scaledRect := image.Rect(offsetX, offsetY, offsetX+newWidth, offsetY+newHeight)
+	draw.NearestNeighbor.Scale(dst, scaledRect, src, srcBounds, draw.Src, nil)
+
 	return dst
 }
 
@@ -333,13 +366,23 @@ func (d *Display) imageToGif(img image.Image) ([]byte, error) {
 				A: pix[i+3],
 			}
 			colorMap[col] = true
+			// Stop if we hit the GIF limit
+			if len(colorMap) >= 256 {
+				break
+			}
+		}
+		if len(colorMap) >= 256 {
+			break
 		}
 	}
 
-	// Convert to palette
+	// Convert to palette (limit to 256 colors max for GIF)
 	palette := make(color.Palette, 0, len(colorMap))
 	for col := range colorMap {
 		palette = append(palette, col)
+		if len(palette) >= 256 {
+			break
+		}
 	}
 
 	if len(palette) == 0 {
@@ -350,23 +393,18 @@ func (d *Display) imageToGif(img image.Image) ([]byte, error) {
 		log.Printf("[Display] GIF palette: %d unique colors", len(palette))
 	}
 
-	// Convert to paletted image
+	// Convert to paletted image (will quantize to nearest color if needed)
 	paletted := image.NewPaletted(bounds, palette)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			paletted.Set(x, y, rgbaImg.At(x, y))
-		}
-	}
+	draw.FloydSteinberg.Draw(paletted, bounds, rgbaImg, image.Point{})
 
-	// Encode as GIF with proper delay metadata
-	// Delay between frames matches our frame interval setting
-	// GIF delay is in 100ths of a second, so for 2 seconds: 2 * 100 = 200
-	delayInHundredths := d.frameIntervalSeconds * 100
-
-	// Create a GIF with delay metadata
+	// Encode as GIF
+	// For static single-frame images, use a very large delay to prevent flickering
+	// 36000 hundredths = 360 seconds = 6 minutes (device will keep frame displayed)
+	// LoopCount of 0 means loop forever, but with large delay it won't flicker
 	gifImage := &gif.GIF{
-		Image: []*image.Paletted{paletted},
-		Delay: []int{delayInHundredths},
+		Image:     []*image.Paletted{paletted},
+		Delay:     []int{36000}, // 6 minutes - effectively static
+		LoopCount: 0,            // Loop forever (but delay is so long it appears static)
 	}
 
 	err := gif.EncodeAll(&buf, gifImage)

@@ -18,6 +18,7 @@ func main() {
 	log.Printf("  LED Panel MAC: %s", cfg.LEDPanelMAC)
 	log.Printf("  Display Size: %dx%d", cfg.DisplayWidth, cfg.DisplayHeight)
 	log.Printf("  Frame Interval: %d seconds", cfg.FrameIntervalSeconds)
+	log.Printf("  Upside Down: %v", cfg.UpsideDown)
 	log.Printf("  HTTP Server: %s:%s", cfg.HTTPHost, cfg.HTTPPort)
 	log.Printf("  Debug BLE: %v", cfg.DebugBLE)
 
@@ -35,6 +36,7 @@ func main() {
 	// Setup routes
 	http.HandleFunc("/display", handler.HandleDisplay)
 	http.HandleFunc("/health", handler.HandleHealth)
+	http.HandleFunc("/upload", handler.HandleUpload)
 
 	// Start server
 	addr := cfg.HTTPHost + ":" + cfg.HTTPPort
@@ -42,6 +44,8 @@ func main() {
 	log.Println("Endpoints:")
 	log.Println("  POST /display - Display an image")
 	log.Println("  GET  /health  - Health check")
+	log.Println("  GET  /upload  - Upload form")
+	log.Println("  POST /upload  - Upload file")
 
 	// Handle graceful shutdown
 	go func() {
