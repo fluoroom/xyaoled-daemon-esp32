@@ -358,8 +358,18 @@ func (d *Display) imageToGif(img image.Image) ([]byte, error) {
 		}
 	}
 
-	// Encode as simple GIF
-	err := gif.Encode(&buf, paletted, nil)
+	// Encode as GIF with proper delay metadata
+	// For animated content, the delay between frames should match our FPS
+	// GIF delay is in 100ths of a second, so for FPS=2, delay=50 (0.5 seconds per frame)
+	delayInHundredths := 100 / d.fps // For FPS=2: 100/2 = 50 (0.5 seconds per frame)
+
+	// Create a GIF with delay metadata
+	gifImage := &gif.GIF{
+		Image: []*image.Paletted{paletted},
+		Delay: []int{delayInHundredths},
+	}
+
+	err := gif.EncodeAll(&buf, gifImage)
 	if err != nil {
 		return nil, err
 	}
