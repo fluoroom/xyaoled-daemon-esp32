@@ -11,10 +11,10 @@ import (
 // Config holds all daemon configuration
 type Config struct {
 	// LED Panel settings
-	LEDPanelMAC   string
-	DisplayWidth  int
-	DisplayHeight int
-	FPS           int
+	LEDPanelMAC          string
+	DisplayWidth         int
+	DisplayHeight        int
+	FrameIntervalSeconds int // Number of seconds between frames
 
 	// Server settings
 	HTTPPort string
@@ -31,15 +31,15 @@ type Config struct {
 // LoadConfig loads configuration from .env file and environment variables
 func LoadConfig() *Config {
 	cfg := &Config{
-		LEDPanelMAC:    "AA:BB:CC:DD:EE:FF",
-		DisplayWidth:   96,
-		DisplayHeight:  16,
-		FPS:            1,
-		HTTPPort:       "11001",
-		HTTPHost:       "0.0.0.0",
-		DebugBLE:       false,
-		VerboseLogging: false,
-		UpsideDown:     false,
+		LEDPanelMAC:          "AA:BB:CC:DD:EE:FF",
+		DisplayWidth:         96,
+		DisplayHeight:        16,
+		FrameIntervalSeconds: 1,
+		HTTPPort:             "11001",
+		HTTPHost:             "0.0.0.0",
+		DebugBLE:             false,
+		VerboseLogging:       false,
+		UpsideDown:           false,
 	}
 
 	// Try to load .env, fall back to .env.example
@@ -80,9 +80,9 @@ func LoadConfig() *Config {
 				if v, err := strconv.Atoi(value); err == nil {
 					cfg.DisplayHeight = v
 				}
-			case "LED_FPS":
+			case "LED_FRAME_INTERVAL_SECONDS":
 				if v, err := strconv.Atoi(value); err == nil {
-					cfg.FPS = v
+					cfg.FrameIntervalSeconds = v
 				}
 			case "HTTP_PORT":
 				cfg.HTTPPort = value
@@ -112,9 +112,9 @@ func LoadConfig() *Config {
 			cfg.DisplayHeight = v
 		}
 	}
-	if val := os.Getenv("LED_FPS"); val != "" {
+	if val := os.Getenv("LED_FRAME_INTERVAL_SECONDS"); val != "" {
 		if v, err := strconv.Atoi(val); err == nil {
-			cfg.FPS = v
+			cfg.FrameIntervalSeconds = v
 		}
 	}
 	if val := os.Getenv("HTTP_PORT"); val != "" {

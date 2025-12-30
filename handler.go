@@ -74,9 +74,9 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
 		"config": map[string]interface{}{
-			"width":  h.config.DisplayWidth,
-			"height": h.config.DisplayHeight,
-			"fps":    h.config.FPS,
+			"width":                  h.config.DisplayWidth,
+			"height":                 h.config.DisplayHeight,
+			"frame_interval_seconds": h.config.FrameIntervalSeconds,
 		},
 	})
 }

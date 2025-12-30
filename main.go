@@ -17,7 +17,7 @@ func main() {
 	log.Printf("Configuration loaded:")
 	log.Printf("  LED Panel MAC: %s", cfg.LEDPanelMAC)
 	log.Printf("  Display Size: %dx%d", cfg.DisplayWidth, cfg.DisplayHeight)
-	log.Printf("  FPS: %d", cfg.FPS)
+	log.Printf("  Frame Interval: %d seconds", cfg.FrameIntervalSeconds)
 	log.Printf("  HTTP Server: %s:%s", cfg.HTTPHost, cfg.HTTPPort)
 	log.Printf("  Debug BLE: %v", cfg.DebugBLE)
 

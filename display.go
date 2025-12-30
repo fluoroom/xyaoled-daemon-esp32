@@ -19,18 +19,18 @@ import (
 
 // Display handles the LED panel display logic
 type Display struct {
-	device        *xyaoled.Device
-	width         int
-	height        int
-	fps           int
-	frameDelay    time.Duration
-	lastUpdate    time.Time
-	debugBLE      bool
-	animationSeq  int
-	config        *Config
-	reconnecting  bool
-	lastGifData   []byte // Store last displayed content for redisplay after reconnect
-	lastGifIsAnim bool   // Track if last content was animated
+	device               *xyaoled.Device
+	width                int
+	height               int
+	frameIntervalSeconds int
+	frameDelay           time.Duration
+	lastUpdate           time.Time
+	debugBLE             bool
+	animationSeq         int
+	config               *Config
+	reconnecting         bool
+	lastGifData          []byte // Store last displayed content for redisplay after reconnect
+	lastGifIsAnim        bool   // Track if last content was animated
 }
 
 // NewDisplay creates a new display instance
@@ -52,18 +52,18 @@ func NewDisplay(cfg *Config) (*Display, error) {
 		log.Printf("Warning: failed to set initial brightness: %v", err)
 	}
 
-	frameDelay := time.Second / time.Duration(cfg.FPS)
+	frameDelay := time.Duration(cfg.FrameIntervalSeconds) * time.Second
 
 	display := &Display{
-		device:       device,
-		width:        cfg.DisplayWidth,
-		height:       cfg.DisplayHeight,
-		fps:          cfg.FPS,
-		frameDelay:   frameDelay,
-		lastUpdate:   time.Now(),
-		debugBLE:     cfg.DebugBLE,
-		config:       cfg,
-		reconnecting: false,
+		device:               device,
+		width:                cfg.DisplayWidth,
+		height:               cfg.DisplayHeight,
+		frameIntervalSeconds: cfg.FrameIntervalSeconds,
+		frameDelay:           frameDelay,
+		lastUpdate:           time.Now(),
+		debugBLE:             cfg.DebugBLE,
+		config:               cfg,
+		reconnecting:         false,
 	}
 
 	// Start connection monitor
@@ -359,9 +359,9 @@ func (d *Display) imageToGif(img image.Image) ([]byte, error) {
 	}
 
 	// Encode as GIF with proper delay metadata
-	// For animated content, the delay between frames should match our FPS
-	// GIF delay is in 100ths of a second, so for FPS=2, delay=50 (0.5 seconds per frame)
-	delayInHundredths := 100 / d.fps // For FPS=2: 100/2 = 50 (0.5 seconds per frame)
+	// Delay between frames matches our frame interval setting
+	// GIF delay is in 100ths of a second, so for 2 seconds: 2 * 100 = 200
+	delayInHundredths := d.frameIntervalSeconds * 100
 
 	// Create a GIF with delay metadata
 	gifImage := &gif.GIF{
