@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
 	"image/gif"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 
 // MainConfigProvider is a function that returns the current ChunkLimits config (for injection from main)
 var MainConfigProvider func() bool
+
+// MainDivideGif returns frames-per-part (0 = disabled)
+var MainDivideGif func() int
 
 const (
 	// BLE Service and Characteristic UUIDs
@@ -615,15 +619,87 @@ func (d *Device) SendGif(gifBuffer []byte) error {
 
 // SendGifWithOptions sends a GIF buffer with configurable behavior
 func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
-	// No chunkLimits logic here; handled in sendGifAttempt
 	// Defaults
 	if !opts.BestEffortClear {
 		opts.BestEffortClear = true
 	}
 
+	// Check divide config (frames per part). If set (>0) and this is an animated GIF,
+	// split into parts of that many frames and send each sequentially without reinit.
+	divide := 0
+	if MainDivideGif != nil {
+		divide = MainDivideGif()
+	}
+	if divide > 0 {
+		// Try to decode GIF; if decode fails, fall through to normal send/ retry logic
+		g, err := gif.DecodeAll(bytes.NewReader(gifBuffer))
+		if err == nil && len(g.Image) > 1 {
+			frames := len(g.Image)
+			for start := 0; start < frames; start += divide {
+				end := start + divide
+				if end > frames {
+					end = frames
+				}
+
+				// Build sub-gif
+				sub := &gif.GIF{
+					Image:     make([]*image.Paletted, 0, end-start),
+					Delay:     make([]int, 0, end-start),
+					LoopCount: g.LoopCount,
+				}
+				for i := start; i < end; i++ {
+					sub.Image = append(sub.Image, g.Image[i])
+					if i < len(g.Delay) {
+						sub.Delay = append(sub.Delay, g.Delay[i])
+					} else {
+						sub.Delay = append(sub.Delay, 10) // fallback
+					}
+				}
+
+				var buf bytes.Buffer
+				if err := gif.EncodeAll(&buf, sub); err != nil {
+					return fmt.Errorf("failed to encode gif part: %w", err)
+				}
+				partBuf := buf.Bytes()
+
+				// For subsequent parts, avoid reinit/clear to maintain continuous playback
+				partOpts := opts
+				if start > 0 {
+					partOpts.ForceReinit = false
+					partOpts.SkipClear = true
+				}
+
+				// Send with retry logic per part
+				maxRetries := 3
+				var lastErr error
+				for attempt := 1; attempt <= maxRetries; attempt++ {
+					err := d.sendGifAttempt(partBuf, partOpts)
+					if err == nil {
+						lastErr = nil
+						break
+					}
+					lastErr = err
+					if d.debug {
+						fmt.Printf("[BLE] Send part attempt %d/%d failed: %v\n", attempt, maxRetries, err)
+					}
+					if err.Error() == "device not connected" || err.Error() == "device is busy" {
+						return err
+					}
+					if attempt < maxRetries {
+						time.Sleep(time.Duration(attempt*50) * time.Millisecond)
+					}
+				}
+				if lastErr != nil {
+					return fmt.Errorf("failed sending gif part starting at frame %d: %w", start, lastErr)
+				}
+			}
+			return nil
+		}
+	}
+
+	// Fallback: send whole GIF with retry logic as before
 	maxRetries := 3
 	var lastErr error
-
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		err := d.sendGifAttempt(gifBuffer, opts)
 		if err == nil {

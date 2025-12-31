@@ -18,6 +18,7 @@ type Config struct {
 	BestEffortClear bool
 	Tests           bool
 	ChunkLimits     bool
+	DivideGif       int
 
 	// Server settings
 	HTTPPort string
@@ -44,6 +45,7 @@ func LoadConfig() *Config {
 		BestEffortClear: false,
 		Tests:           false,
 		ChunkLimits:     true,
+		DivideGif:       0,
 		HTTPPort:        "11001",
 		HTTPHost:        "0.0.0.0",
 		DebugBLE:        false,
@@ -55,6 +57,11 @@ func LoadConfig() *Config {
 	// After loading from file, override with environment variable
 	if val := os.Getenv("CHUNK_LIMITS"); val != "" {
 		cfg.ChunkLimits = strings.EqualFold(val, "true")
+	}
+	if val := os.Getenv("DIVIDE_GIF"); val != "" {
+		if v, err := strconv.Atoi(val); err == nil {
+			cfg.DivideGif = v
+		}
 	}
 
 	// Try to load .env, fall back to .env.example
@@ -103,6 +110,10 @@ func LoadConfig() *Config {
 				cfg.Tests = strings.EqualFold(value, "true")
 			case "CHUNK_LIMITS":
 				cfg.ChunkLimits = strings.EqualFold(value, "true")
+			case "DIVIDE_GIF":
+				if v, err := strconv.Atoi(value); err == nil {
+					cfg.DivideGif = v
+				}
 			case "HTTP_PORT":
 				cfg.HTTPPort = value
 			case "HTTP_HOST":
