@@ -11,13 +11,12 @@ import (
 // Config holds all daemon configuration
 type Config struct {
 	// LED Panel settings
-	LEDPanelMAC          string
-	DisplayWidth         int
-	DisplayHeight        int
-	FrameIntervalSeconds int // Number of seconds between frames
-	SkipClear            bool
-	BestEffortClear      bool
-	Tests                bool
+	LEDPanelMAC     string
+	DisplayWidth    int
+	DisplayHeight   int
+	SkipClear       bool
+	BestEffortClear bool
+	Tests           bool
 
 	// Server settings
 	HTTPPort string
@@ -29,23 +28,26 @@ type Config struct {
 
 	// Display orientation
 	UpsideDown bool
+
+	// Reset settings
+	ResetInterval int // Send reset every N sends (0 = disabled)
 }
 
 // LoadConfig loads configuration from .env file and environment variables
 func LoadConfig() *Config {
 	cfg := &Config{
-		LEDPanelMAC:          "AA:BB:CC:DD:EE:FF",
-		DisplayWidth:         96,
-		DisplayHeight:        16,
-		FrameIntervalSeconds: 1,
-		SkipClear:            false,
-		BestEffortClear:      false,
-		Tests:                false,
-		HTTPPort:             "11001",
-		HTTPHost:             "0.0.0.0",
-		DebugBLE:             false,
-		VerboseLogging:       false,
-		UpsideDown:           false,
+		LEDPanelMAC:     "AA:BB:CC:DD:EE:FF",
+		DisplayWidth:    96,
+		DisplayHeight:   16,
+		SkipClear:       false,
+		BestEffortClear: false,
+		Tests:           false,
+		HTTPPort:        "11001",
+		HTTPHost:        "0.0.0.0",
+		DebugBLE:        false,
+		VerboseLogging:  false,
+		UpsideDown:      false,
+		ResetInterval:   0,
 	}
 
 	// Try to load .env, fall back to .env.example
@@ -86,10 +88,6 @@ func LoadConfig() *Config {
 				if v, err := strconv.Atoi(value); err == nil {
 					cfg.DisplayHeight = v
 				}
-			case "LED_FRAME_INTERVAL_SECONDS":
-				if v, err := strconv.Atoi(value); err == nil {
-					cfg.FrameIntervalSeconds = v
-				}
 			case "SKIP_CLEAR":
 				cfg.SkipClear = strings.EqualFold(value, "true")
 			case "BEST_EFFORT_CLEAR":
@@ -106,6 +104,10 @@ func LoadConfig() *Config {
 				cfg.VerboseLogging = value == "true"
 			case "UPSIDE_DOWN":
 				cfg.UpsideDown = value == "true"
+			case "RESET_INTERVAL":
+				if v, err := strconv.Atoi(value); err == nil {
+					cfg.ResetInterval = v
+				}
 			}
 		}
 	}
@@ -122,11 +124,6 @@ func LoadConfig() *Config {
 	if val := os.Getenv("LED_DISPLAY_HEIGHT"); val != "" {
 		if v, err := strconv.Atoi(val); err == nil {
 			cfg.DisplayHeight = v
-		}
-	}
-	if val := os.Getenv("LED_FRAME_INTERVAL_SECONDS"); val != "" {
-		if v, err := strconv.Atoi(val); err == nil {
-			cfg.FrameIntervalSeconds = v
 		}
 	}
 	if val := os.Getenv("SKIP_CLEAR"); val != "" {
@@ -152,6 +149,11 @@ func LoadConfig() *Config {
 	}
 	if val := os.Getenv("UPSIDE_DOWN"); val != "" {
 		cfg.UpsideDown = val == "true"
+	}
+	if val := os.Getenv("RESET_INTERVAL"); val != "" {
+		if v, err := strconv.Atoi(val); err == nil {
+			cfg.ResetInterval = v
+		}
 	}
 
 	return cfg

@@ -27,6 +27,7 @@ type Handler struct {
 	display          *Display
 	config           *Config
 	lastOnBrightness uint8
+	sendCounter      int
 }
 
 // NewHandler creates a new HTTP handler
@@ -99,23 +100,43 @@ func isAnimatedPayload(base64Data string) (bool, error) {
 }
 
 func (h *Handler) displayImage(base64Data string, isAnimated bool, reinit bool) error {
+	buf, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64: %w", err)
+	}
+
 	if isAnimated {
 		if reinit {
-			return h.display.ShowAnimatedGif(base64Data)
+			err = h.display.experimentalSendAnimated(buf, xyaoled.SendOptions{ForceReinit: true})
+		} else {
+			err = h.display.experimentalSendAnimatedNoReinit(buf, true)
 		}
-		return h.display.ShowAnimatedGifNoReinit(base64Data, true)
+		if err != nil {
+			return err
+		}
+		log.Printf("✓ Sent animated GIF to screen (reinit=%v, bytes=%d)", reinit, len(buf))
+		h.sendCounter++
+		if h.config.ResetInterval > 0 && h.sendCounter%h.config.ResetInterval == 0 {
+			log.Printf("Performing periodic reset after %d image sends", h.sendCounter)
+			h.display.experimentalDisconnect()
+			h.display.experimentalConnect()
+		}
+		return nil
 	}
 	if reinit {
-		if err := h.display.ShowImage(base64Data); err != nil {
-			return err
-		}
+		err = h.display.experimentalSendStatic(buf, xyaoled.SendOptions{ForceReinit: true, StaticHeader: true})
 	} else {
-		if err := h.display.ShowImageNoReinit(base64Data); err != nil {
-			return err
-		}
+		err = h.display.experimentalSendStaticNoReinit(buf, true)
 	}
-	if h.config.Tests {
-		runExperimentalNoClearVariants(h.display, base64Data, isAnimated)
+	if err != nil {
+		return err
+	}
+	log.Printf("✓ Sent static image to screen (reinit=%v, bytes=%d)", reinit, len(buf))
+	h.sendCounter++
+	if h.config.ResetInterval > 0 && h.sendCounter%h.config.ResetInterval == 0 {
+		log.Printf("Performing periodic reset after %d image sends", h.sendCounter)
+		h.display.experimentalDisconnect()
+		h.display.experimentalConnect()
 	}
 	return nil
 }
@@ -382,9 +403,8 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
 		"config": map[string]interface{}{
-			"width":                  h.config.DisplayWidth,
-			"height":                 h.config.DisplayHeight,
-			"frame_interval_seconds": h.config.FrameIntervalSeconds,
+			"width":  h.config.DisplayWidth,
+			"height": h.config.DisplayHeight,
 		},
 	})
 }

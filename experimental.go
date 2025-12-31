@@ -231,9 +231,11 @@ func (d *Display) experimentalSendAnimatedNoReinit(buf []byte, loopInfinite bool
 	if err != nil {
 		return err
 	}
+	slot := uint8(0x05)
+	opts := xyaoled.SendOptions{SkipClear: true, BestEffortClear: true, LogHeader: true, SlotOverride: &slot}
 	d.sendMutex.Lock()
 	defer d.sendMutex.Unlock()
-	return d.device.SendGifWithOptions(payload, xyaoled.SendOptions{SkipClear: true, BestEffortClear: true})
+	return d.device.SendGifWithOptions(payload, opts)
 }
 
 // experimentalBrightnessCycle steps through brightness levels with a small pause.

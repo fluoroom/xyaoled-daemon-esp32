@@ -20,21 +20,20 @@ import (
 
 // Display handles the LED panel display logic
 type Display struct {
-	device               *xyaoled.Device
-	width                int
-	height               int
-	frameIntervalSeconds int
-	frameDelay           time.Duration
-	lastUpdate           time.Time
-	debugBLE             bool
-	animationSeq         int
-	config               *Config
-	reconnecting         bool
-	lastGifData          []byte     // Store last displayed content for redisplay after reconnect
-	lastGifIsAnim        bool       // Track if last content was animated
-	sendMutex            sync.Mutex // Prevent concurrent sends to device
-	firstSendDone        bool       // Track first send after connection
-	prevBrightness       uint8      // Remember last non-dim brightness for screen on/off experiments
+	device         *xyaoled.Device
+	width          int
+	height         int
+	frameDelay     time.Duration
+	lastUpdate     time.Time
+	debugBLE       bool
+	animationSeq   int
+	config         *Config
+	reconnecting   bool
+	lastGifData    []byte     // Store last displayed content for redisplay after reconnect
+	lastGifIsAnim  bool       // Track if last content was animated
+	sendMutex      sync.Mutex // Prevent concurrent sends to device
+	firstSendDone  bool       // Track first send after connection
+	prevBrightness uint8      // Remember last non-dim brightness for screen on/off experiments
 }
 
 func (d *Display) sendOpts(forceReinit bool, staticHeader bool, skipClear bool) xyaoled.SendOptions {
@@ -84,20 +83,19 @@ func NewDisplay(cfg *Config) (*Display, error) {
 		log.Printf("Warning: failed to set initial brightness: %v", err)
 	}
 
-	frameDelay := time.Duration(cfg.FrameIntervalSeconds) * time.Second
+	frameDelay := time.Duration(1) * time.Second
 
 	display := &Display{
-		device:               device,
-		width:                cfg.DisplayWidth,
-		height:               cfg.DisplayHeight,
-		frameIntervalSeconds: cfg.FrameIntervalSeconds,
-		frameDelay:           frameDelay,
-		lastUpdate:           time.Now(),
-		debugBLE:             cfg.DebugBLE,
-		config:               cfg,
-		reconnecting:         false,
-		firstSendDone:        false,
-		prevBrightness:       125,
+		device:         device,
+		width:          cfg.DisplayWidth,
+		height:         cfg.DisplayHeight,
+		frameDelay:     frameDelay,
+		lastUpdate:     time.Now(),
+		debugBLE:       cfg.DebugBLE,
+		config:         cfg,
+		reconnecting:   false,
+		firstSendDone:  false,
+		prevBrightness: 125,
 	}
 
 	// Start connection monitor
