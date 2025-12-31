@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/gif"
 	"io"
 	"log"
 	"net/http"
@@ -22,15 +24,17 @@ type ImageRequest struct {
 
 // Handler manages HTTP requests
 type Handler struct {
-	display *Display
-	config  *Config
+	display          *Display
+	config           *Config
+	lastOnBrightness uint8
 }
 
 // NewHandler creates a new HTTP handler
 func NewHandler(display *Display, cfg *Config) *Handler {
 	return &Handler{
-		display: display,
-		config:  cfg,
+		display:          display,
+		config:           cfg,
+		lastOnBrightness: 125,
 	}
 }
 
@@ -77,12 +81,38 @@ func readOptionalFile(r *http.Request, field string) ([]byte, string, error) {
 }
 
 // displayImage handles the actual display logic (shared by multiple endpoints)
-func (h *Handler) displayImage(base64Data string, isAnimated bool) error {
-	if isAnimated {
-		return h.display.ShowAnimatedGif(base64Data)
+func isAnimatedPayload(base64Data string) (bool, error) {
+	buf, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return false, err
 	}
-	if err := h.display.ShowImage(base64Data); err != nil {
-		return err
+
+	g, err := gif.DecodeAll(bytes.NewReader(buf))
+	if err != nil {
+		return false, nil // not a GIF => treat as static
+	}
+	if len(g.Image) > 1 {
+		return true, nil
+	}
+	// Single frame GIF: treat as static
+	return false, nil
+}
+
+func (h *Handler) displayImage(base64Data string, isAnimated bool, reinit bool) error {
+	if isAnimated {
+		if reinit {
+			return h.display.ShowAnimatedGif(base64Data)
+		}
+		return h.display.ShowAnimatedGifNoReinit(base64Data, true)
+	}
+	if reinit {
+		if err := h.display.ShowImage(base64Data); err != nil {
+			return err
+		}
+	} else {
+		if err := h.display.ShowImageNoReinit(base64Data); err != nil {
+			return err
+		}
 	}
 	if h.config.Tests {
 		runExperimentalNoClearVariants(h.display, base64Data, isAnimated)
@@ -285,14 +315,59 @@ func (h *Handler) HandleDisplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default to static if type not specified
+	// Detect animation if type not specified or to double-check
+	isAnim := req.Type == "animated"
 	if req.Type == "" {
-		req.Type = "static"
+		var detectErr error
+		isAnim, detectErr = isAnimatedPayload(req.ImageData)
+		if detectErr != nil {
+			log.Printf("/display detect failed, defaulting to static: %v", detectErr)
+			isAnim = false
+		}
 	}
 
-	// Display image
-	if err := h.displayImage(req.ImageData, req.Type == "animated"); err != nil {
+	// Display image without reinit
+	if err := h.displayImage(req.ImageData, isAnim, false); err != nil {
 		log.Printf("Error displaying image: %v", err)
+		http.Error(w, "Failed to display image", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// HandleDisplayReinit handles POST /display-r endpoint (force reinit path)
+func (h *Handler) HandleDisplayReinit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req ImageRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.ImageData == "" {
+		http.Error(w, "Missing image data", http.StatusBadRequest)
+		return
+	}
+
+	isAnim := req.Type == "animated"
+	if req.Type == "" {
+		var detectErr error
+		isAnim, detectErr = isAnimatedPayload(req.ImageData)
+		if detectErr != nil {
+			log.Printf("/display-r detect failed, defaulting to static: %v", detectErr)
+			isAnim = false
+		}
+	}
+
+	if err := h.displayImage(req.ImageData, isAnim, true); err != nil {
+		log.Printf("Error displaying image (reinit): %v", err)
 		http.Error(w, "Failed to display image", http.StatusInternalServerError)
 		return
 	}
@@ -408,7 +483,7 @@ msg.className='msg error';
 
 		// Determine if animated GIF and display
 		isAnimated := strings.HasSuffix(strings.ToLower(header.Filename), ".gif")
-		if err := h.displayImage(base64Data, isAnimated); err != nil {
+		if err := h.displayImage(base64Data, isAnimated, false); err != nil {
 			log.Printf("Error displaying uploaded image: %v", err)
 			http.Error(w, "Failed to display image", http.StatusInternalServerError)
 			return
@@ -420,4 +495,96 @@ msg.className='msg error';
 	}
 
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// HandleOff sets brightness to 5 and remembers previous level.
+func (h *Handler) HandleOff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.display.device == nil {
+		http.Error(w, "Device not ready", http.StatusServiceUnavailable)
+		return
+	}
+	if cur := h.display.device.GetBrightness(); cur >= 5 {
+		h.lastOnBrightness = cur
+		h.display.prevBrightness = cur
+	}
+	if err := h.display.device.SetBrightness(5); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "brightness": "5"})
+}
+
+// HandleOn restores brightness to the level saved before /off (default 80 if unknown).
+func (h *Handler) HandleOn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.display.device == nil {
+		http.Error(w, "Device not ready", http.StatusServiceUnavailable)
+		return
+	}
+	target := h.lastOnBrightness
+	if target < 5 {
+		target = 5
+	}
+	if target > 125 {
+		target = 125
+	}
+	h.display.prevBrightness = target
+	if err := h.display.device.SetBrightness(target); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "brightness": target})
+}
+
+// HandleBrightness sets brightness to the provided value (clamped 5-125).
+func (h *Handler) HandleBrightness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.display.device == nil {
+		http.Error(w, "Device not ready", http.StatusServiceUnavailable)
+		return
+	}
+	raw := strings.TrimPrefix(r.URL.Path, "/brightness/")
+	val, err := strconv.Atoi(raw)
+	if err != nil {
+		http.Error(w, "Invalid brightness", http.StatusBadRequest)
+		return
+	}
+	if val < 5 {
+		val = 5
+	}
+	if val > 125 {
+		val = 125
+	}
+	level := uint8(val)
+	h.lastOnBrightness = level
+	h.display.prevBrightness = level
+	if err := h.display.device.SetBrightness(level); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "brightness": level})
+}
+
+// HandleReconnect triggers a reconnect attempt.
+func (h *Handler) HandleReconnect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	go h.display.attemptReconnection()
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"status": "reconnecting"})
 }

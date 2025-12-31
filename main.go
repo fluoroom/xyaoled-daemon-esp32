@@ -35,20 +35,30 @@ func main() {
 
 	// Setup routes
 	http.HandleFunc("/display", handler.HandleDisplay)
+	http.HandleFunc("/display-r", handler.HandleDisplayReinit)
 	http.HandleFunc("/health", handler.HandleHealth)
 	http.HandleFunc("/upload", handler.HandleUpload)
 	http.HandleFunc("/uploadTest", handler.HandleUploadTest)
+	http.HandleFunc("/off", handler.HandleOff)
+	http.HandleFunc("/on", handler.HandleOn)
+	http.HandleFunc("/brightness/", handler.HandleBrightness)
+	http.HandleFunc("/reconnect", handler.HandleReconnect)
 
 	// Start server
 	addr := cfg.HTTPHost + ":" + cfg.HTTPPort
 	log.Printf("Starting HTTP server on %s", addr)
 	log.Println("Endpoints:")
 	log.Println("  POST /display - Display an image")
+	log.Println("  POST /display-r - Display an image with reinit")
 	log.Println("  GET  /health  - Health check")
 	log.Println("  GET  /upload  - Upload form")
 	log.Println("  POST /upload  - Upload file")
 	log.Println("  GET  /uploadTest - Manual test harness")
 	log.Println("  POST /uploadTest - Run scripted command")
+	log.Println("  GET  /off - Dim to 5")
+	log.Println("  GET  /on - Restore brightness before off")
+	log.Println("  GET /brightness/{n} - Set brightness 5-125")
+	log.Println("  GET /reconnect - Trigger reconnect")
 
 	// Handle graceful shutdown
 	go func() {

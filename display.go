@@ -79,8 +79,8 @@ func NewDisplay(cfg *Config) (*Display, error) {
 
 	log.Println("✓ Successfully connected to XYAOLED LED panel!")
 
-	// Set initial brightness to 80%
-	if err := device.SetBrightness(80); err != nil {
+	// Set initial brightness to 125%
+	if err := device.SetBrightness(125); err != nil {
 		log.Printf("Warning: failed to set initial brightness: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func NewDisplay(cfg *Config) (*Display, error) {
 		config:               cfg,
 		reconnecting:         false,
 		firstSendDone:        false,
-		prevBrightness:       100,
+		prevBrightness:       125,
 	}
 
 	// Start connection monitor
@@ -215,6 +215,53 @@ func (d *Display) ShowImage(base64Data string) error {
 	return nil
 }
 
+// ShowImageNoReinit displays a single image without reinit/clear, using the log-compatible header/slot.
+func (d *Display) ShowImageNoReinit(base64Data string) error {
+	imgData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	img, format, err := image.Decode(bytes.NewReader(imgData))
+	if err != nil {
+		return fmt.Errorf("failed to decode image: %w", err)
+	}
+
+	if d.debugBLE {
+		log.Printf("[Display] Decoded %s image (no-reinit): %dx%d", format, img.Bounds().Dx(), img.Bounds().Dy())
+	}
+
+	gifData, err := d.processStaticAsAnimated(img)
+	if err != nil {
+		return fmt.Errorf("failed to process image: %w", err)
+	}
+
+	// Store last content
+	d.lastGifData = gifData
+	d.lastGifIsAnim = false
+
+	// Stop any running animation/refresh loops
+	d.animationSeq++
+
+	// No reinit/clear; use log-compatible header and slot 0x05
+	slot := uint8(0x05)
+	opts := d.sendOpts(false, false, true)
+	opts.LogHeader = true
+	opts.SlotOverride = &slot
+	// Ensure best-effort clear even if config disabled
+	opts.BestEffortClear = true
+
+	d.sendMutex.Lock()
+	sendErr := d.device.SendGifWithOptions(gifData, opts)
+	d.sendMutex.Unlock()
+	if sendErr != nil {
+		return fmt.Errorf("failed to send static image (no-reinit): %w", sendErr)
+	}
+
+	d.firstSendDone = true
+	return nil
+}
+
 // ShowAnimatedGif displays an animated GIF (base64 encoded)
 func (d *Display) ShowAnimatedGif(base64Data string) error {
 	// Decode base64
@@ -269,6 +316,48 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 	// Mark first successful send after connection
 	d.firstSendDone = true
 
+	return nil
+}
+
+// ShowAnimatedGifNoReinit displays an animated GIF without reinit/clear (infinite loop by default).
+func (d *Display) ShowAnimatedGifNoReinit(base64Data string, loopInfinite bool) error {
+	imgData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	gifImg, err := gif.DecodeAll(bytes.NewReader(imgData))
+	if err != nil {
+		return fmt.Errorf("failed to decode GIF: %w", err)
+	}
+
+	if d.debugBLE {
+		log.Printf("[Display] Decoded animated GIF (no-reinit): %d frames", len(gifImg.Image))
+	}
+
+	processedGif, err := d.processAnimatedGifWithLoop(gifImg, loopInfinite)
+	if err != nil {
+		return fmt.Errorf("failed to process animated GIF: %w", err)
+	}
+
+	// Stop any running animation/refresh loops
+	d.animationSeq++
+
+	// Store last content
+	d.lastGifData = processedGif
+	d.lastGifIsAnim = true
+
+	opts := d.sendOpts(false, false, true)
+	opts.BestEffortClear = true
+
+	d.sendMutex.Lock()
+	sendErr := d.device.SendGifWithOptions(processedGif, opts)
+	d.sendMutex.Unlock()
+	if sendErr != nil {
+		return fmt.Errorf("failed to send animated GIF (no-reinit): %w", sendErr)
+	}
+
+	d.firstSendDone = true
 	return nil
 }
 
