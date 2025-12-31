@@ -209,6 +209,8 @@ func (d *Display) ShowImage(base64Data string) error {
 		return fmt.Errorf("failed to send static image: %w", sendErr)
 	}
 
+	log.Printf("✓ Sent static image to screen (forceReinit=%v, skipClear=%v, staticHeader=%v, bytes=%d)", opts.ForceReinit, opts.SkipClear, opts.StaticHeader, len(gifData))
+
 	// Mark first successful send after connection
 	d.firstSendDone = true
 
@@ -262,6 +264,8 @@ func (d *Display) ShowImageNoReinit(base64Data string) error {
 	if sendErr != nil {
 		return fmt.Errorf("failed to send static image (no-reinit): %w", sendErr)
 	}
+
+	log.Printf("✓ Sent static image to screen (no-reinit, slot=0x%02x, bytes=%d)", slot, len(gifData))
 
 	d.firstSendDone = true
 	return nil
@@ -318,6 +322,8 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 		return fmt.Errorf("failed to send animated GIF: %w", sendErr)
 	}
 
+	log.Printf("✓ Sent animated GIF to screen (frames=%d, forceReinit=%v, skipClear=%v, bytes=%d)", len(gifImg.Image), opts.ForceReinit, opts.SkipClear, len(processedGif))
+
 	// Mark first successful send after connection
 	d.firstSendDone = true
 
@@ -366,6 +372,8 @@ func (d *Display) ShowAnimatedGifNoReinit(base64Data string, loopInfinite bool) 
 	if sendErr != nil {
 		return fmt.Errorf("failed to send animated GIF (no-reinit): %w", sendErr)
 	}
+
+	log.Printf("✓ Sent animated GIF to screen (no-reinit, frames=%d, loopInfinite=%v, bytes=%d)", len(gifImg.Image), loopInfinite, len(processedGif))
 
 	d.firstSendDone = true
 	return nil
