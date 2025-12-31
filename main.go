@@ -1,4 +1,7 @@
+import "./xyaoled"
 package main
+
+import "./xyaoled"
 
 import (
 	"log"
@@ -9,6 +12,10 @@ import (
 )
 
 func main() {
+	// Set up config provider for chunking logic
+	xyaoled.MainConfigProvider = func() bool {
+		return config.ChunkLimits
+	}
 	log.Println("XYAOLED Daemon - LED Display Server")
 	log.Println("====================================")
 
