@@ -1,21 +1,17 @@
+// Package xyaoled provides a native Go implementation of the XYAOLED BLE LED display protocol.
+// This is a professional reverse-engineering port from the Node.js leo library.
 package xyaoled
 
 import (
 	"bytes"
 	"errors"
 	"fmt"
-	"image"
 	"image/gif"
+	"strings"
 	"time"
 
 	"tinygo.org/x/bluetooth"
 )
-
-// MainConfigProvider is a function that returns the current ChunkLimits config (for injection from main)
-var MainConfigProvider func() bool
-
-// MainDivideGif returns frames-per-part (0 = disabled)
-var MainDivideGif func() int
 
 const (
 	// BLE Service and Characteristic UUIDs
@@ -41,6 +37,16 @@ const (
 	burstPaceBytes   = 1024
 	burstPause       = 12 * time.Millisecond
 )
+
+// ChunkLimits controls whether the sender obeys ATT-sized chunking, pacing and
+// periodic pauses when uploading GIF packets. When false, the code will attempt
+// to send the full packet in a single write for animated GIFs.
+var ChunkLimits = true
+
+// SetChunkLimits sets the package-level ChunkLimits flag.
+func SetChunkLimits(v bool) {
+	ChunkLimits = v
+}
 
 // clearPlaybackSequence returns a command that stops/clears current playback
 // Reuses the initialization stop command observed to reset playback state.
@@ -465,7 +471,28 @@ func (d *Device) send(data []byte) error {
 	if err != nil && d.debug {
 		fmt.Printf("[BLE] ✗ Send failed: %v\n", err)
 	}
+	if err != nil {
+		// Mark wrapper as disconnected so connection monitor can pick this up
+		d.isConnected = false
+	}
 	return err
+}
+
+// Ping performs a lightweight write to detect broken connections. It does
+// not alter any device state except marking the device disconnected on
+// failure. Returns nil on success or an error on failure.
+func (d *Device) Ping() error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+	// A zero-length write may not be allowed on all stacks; use a single
+	// zero byte which is unlikely to have side effects.
+	_, err := d.writeChar.WriteWithoutResponse([]byte{0x00})
+	if err != nil {
+		d.isConnected = false
+		return err
+	}
+	return nil
 }
 
 // SetBrightness sets the display brightness (0-125 observed)
@@ -624,82 +651,9 @@ func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
 		opts.BestEffortClear = true
 	}
 
-	// Check divide config (frames per part). If set (>0) and this is an animated GIF,
-	// split into parts of that many frames and send each sequentially without reinit.
-	divide := 0
-	if MainDivideGif != nil {
-		divide = MainDivideGif()
-	}
-	if divide > 0 {
-		// Try to decode GIF; if decode fails, fall through to normal send/ retry logic
-		g, err := gif.DecodeAll(bytes.NewReader(gifBuffer))
-		if err == nil && len(g.Image) > 1 {
-			frames := len(g.Image)
-			for start := 0; start < frames; start += divide {
-				end := start + divide
-				if end > frames {
-					end = frames
-				}
-
-				// Build sub-gif
-				sub := &gif.GIF{
-					Image:     make([]*image.Paletted, 0, end-start),
-					Delay:     make([]int, 0, end-start),
-					LoopCount: g.LoopCount,
-				}
-				for i := start; i < end; i++ {
-					sub.Image = append(sub.Image, g.Image[i])
-					if i < len(g.Delay) {
-						sub.Delay = append(sub.Delay, g.Delay[i])
-					} else {
-						sub.Delay = append(sub.Delay, 10) // fallback
-					}
-				}
-
-				var buf bytes.Buffer
-				if err := gif.EncodeAll(&buf, sub); err != nil {
-					return fmt.Errorf("failed to encode gif part: %w", err)
-				}
-				partBuf := buf.Bytes()
-
-				// For subsequent parts, avoid reinit/clear to maintain continuous playback
-				partOpts := opts
-				if start > 0 {
-					partOpts.ForceReinit = false
-					partOpts.SkipClear = true
-				}
-
-				// Send with retry logic per part
-				maxRetries := 3
-				var lastErr error
-				for attempt := 1; attempt <= maxRetries; attempt++ {
-					err := d.sendGifAttempt(partBuf, partOpts)
-					if err == nil {
-						lastErr = nil
-						break
-					}
-					lastErr = err
-					if d.debug {
-						fmt.Printf("[BLE] Send part attempt %d/%d failed: %v\n", attempt, maxRetries, err)
-					}
-					if err.Error() == "device not connected" || err.Error() == "device is busy" {
-						return err
-					}
-					if attempt < maxRetries {
-						time.Sleep(time.Duration(attempt*50) * time.Millisecond)
-					}
-				}
-				if lastErr != nil {
-					return fmt.Errorf("failed sending gif part starting at frame %d: %w", start, lastErr)
-				}
-			}
-			return nil
-		}
-	}
-
-	// Fallback: send whole GIF with retry logic as before
 	maxRetries := 3
 	var lastErr error
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		err := d.sendGifAttempt(gifBuffer, opts)
 		if err == nil {
@@ -711,8 +665,14 @@ func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
 			fmt.Printf("[BLE] Send attempt %d/%d failed: %v\n", attempt, maxRetries, err)
 		}
 
-		// Don't retry if device is not connected or is busy
+		// If the error indicates the device is not connected, reinitialization
+		// failed, or a DBus/WriteValue signature issue, do not retry the image
+		// upload — return immediately so callers get the real error and can
+		// decide what to do (we'll trigger reconnect elsewhere).
 		if err.Error() == "device not connected" || err.Error() == "device is busy" {
+			return err
+		}
+		if strings.Contains(err.Error(), "failed to reinitialize") || strings.Contains(err.Error(), "Not connected") || strings.Contains(err.Error(), "WriteValue") {
 			return err
 		}
 
@@ -731,11 +691,6 @@ func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
 
 // sendGifAttempt performs a single attempt to send the GIF
 func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
-	// Check for chunk limits config
-	chunkLimits := true
-	if MainConfigProvider != nil {
-		chunkLimits = MainConfigProvider()
-	}
 	if !d.isConnected {
 		return errors.New("device not connected")
 	}
@@ -820,23 +775,24 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 		fmt.Printf("[BLE] Built packet: %d bytes total (header: 24, data: %d)\n", len(packet), len(gifBuffer))
 	}
 
-	if !chunkLimits {
-		// Send all at once, no chunking or pacing
+	// Determine chunk delay based on GIF size (short, vendor-like pacing)
+	var chunkDelay time.Duration
+	if len(gifBuffer) > gifSizeThreshold {
+		chunkDelay = largeGifDelay
+	} else {
+		chunkDelay = smallGifDelay
+	}
+
+	// If chunk limits are disabled and this is an animated GIF (we have meta),
+	// attempt to send the full packet in a single write and skip ATT-sized chunking
+	if !ChunkLimits && metaErr == nil && meta.frames > 1 {
 		if d.debug {
-			fmt.Println("[BLE] Sending full packet in one go (CHUNK_LIMITS=false)")
+			fmt.Printf("[BLE] Chunk limits disabled: sending full packet in one write (%d bytes)\n", len(packet))
 		}
 		if err := d.send(packet); err != nil {
-			return fmt.Errorf("failed to send packet: %w", err)
+			return fmt.Errorf("failed to send full packet: %w", err)
 		}
 	} else {
-		// Determine chunk delay based on GIF size (short, vendor-like pacing)
-		var chunkDelay time.Duration
-		if len(gifBuffer) > gifSizeThreshold {
-			chunkDelay = largeGifDelay
-		} else {
-			chunkDelay = smallGifDelay
-		}
-
 		// Send packet in smaller ATT-sized chunks with periodic pauses to mimic vendor pacing
 		offset := 0
 		chunkNum := 0

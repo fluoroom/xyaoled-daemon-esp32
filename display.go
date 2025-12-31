@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"xyaoled-daemon/xyaoled"
@@ -144,6 +145,13 @@ func (d *Display) loadAndDisplayDefaultGif() error {
 	sendErr := d.device.SendGifWithOptions(gifData, opts)
 	d.sendMutex.Unlock()
 	if sendErr != nil {
+		msg := sendErr.Error()
+		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue") {
+			log.Printf("Error displaying default.gif (reinit): %v", sendErr)
+			if !d.reconnecting {
+				go d.attemptReconnection()
+			}
+		}
 		return fmt.Errorf("failed to send default.gif: %w", sendErr)
 	}
 	// Treat default as first successful send after connection
@@ -204,6 +212,13 @@ func (d *Display) ShowImage(base64Data string) error {
 	sendErr := d.device.SendGifWithOptions(gifData, opts)
 	d.sendMutex.Unlock()
 	if sendErr != nil {
+		msg := sendErr.Error()
+		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue") {
+			log.Printf("Error displaying image (reinit): %v", sendErr)
+			if !d.reconnecting {
+				go d.attemptReconnection()
+			}
+		}
 		return fmt.Errorf("failed to send static image: %w", sendErr)
 	}
 
@@ -260,6 +275,13 @@ func (d *Display) ShowImageNoReinit(base64Data string) error {
 	sendErr := d.device.SendGifWithOptions(gifData, opts)
 	d.sendMutex.Unlock()
 	if sendErr != nil {
+		msg := sendErr.Error()
+		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue") {
+			log.Printf("Error displaying image (no-reinit, reinit): %v", sendErr)
+			if !d.reconnecting {
+				go d.attemptReconnection()
+			}
+		}
 		return fmt.Errorf("failed to send static image (no-reinit): %w", sendErr)
 	}
 
@@ -317,6 +339,13 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 	sendErr := d.device.SendGifWithOptions(processedGif, opts)
 	d.sendMutex.Unlock()
 	if sendErr != nil {
+		msg := sendErr.Error()
+		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue") {
+			log.Printf("Error displaying animated GIF (reinit): %v", sendErr)
+			if !d.reconnecting {
+				go d.attemptReconnection()
+			}
+		}
 		return fmt.Errorf("failed to send animated GIF: %w", sendErr)
 	}
 
@@ -368,6 +397,13 @@ func (d *Display) ShowAnimatedGifNoReinit(base64Data string, loopInfinite bool) 
 	sendErr := d.device.SendGifWithOptions(processedGif, opts)
 	d.sendMutex.Unlock()
 	if sendErr != nil {
+		msg := sendErr.Error()
+		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue") {
+			log.Printf("Error displaying animated GIF (no-reinit, reinit): %v", sendErr)
+			if !d.reconnecting {
+				go d.attemptReconnection()
+			}
+		}
 		return fmt.Errorf("failed to send animated GIF (no-reinit): %w", sendErr)
 	}
 
@@ -702,6 +738,18 @@ func (d *Display) connectionMonitor() {
 		if d.device != nil && !d.device.IsConnected() {
 			log.Println("⚠ Connection lost! Attempting to reconnect...")
 			go d.attemptReconnection()
+			continue
+		}
+
+		// Perform a lightweight ping to detect silent disconnects. If ping
+		// fails, trigger reconnection. This helps catch cases where the
+		// underlying BLE stack lost the link but the wrapper still thinks
+		// it's connected.
+		if d.device != nil {
+			if err := d.device.Ping(); err != nil {
+				log.Printf("⚠ Connection ping failed: %v. Attempting to reconnect...", err)
+				go d.attemptReconnection()
+			}
 		}
 	}
 }
@@ -713,32 +761,45 @@ func (d *Display) attemptReconnection() {
 	}
 	d.reconnecting = true
 	defer func() { d.reconnecting = false }()
-
+	// Start with a modest retry delay and use exponential backoff (capped)
 	retryDelay := 5 * time.Second
+	maxDelay := 60 * time.Second
 	attempt := 0
 
 	for {
 		attempt++
 		log.Printf("Reconnection attempt %d...", attempt)
 
-		// Try to disconnect first (cleanup)
+		// Try to disconnect first (cleanup). Allow BlueZ a moment to tear down
+		// any stale object paths after a device power-cycle.
 		if d.device != nil {
-			d.device.Disconnect()
+			_ = d.device.Disconnect()
+			// Small pause to give BlueZ time to remove object references
+			time.Sleep(1 * time.Second)
 		}
 
-		// Create new device
+		// Create new device instance
 		device, err := xyaoled.NewDevice(d.debugBLE)
 		if err != nil {
 			log.Printf("Failed to create device: %v. Retrying in %v...", err, retryDelay)
 			time.Sleep(retryDelay)
+			retryDelay = minDuration(maxDelay, retryDelay*2)
 			continue
 		}
 
 		// Try to connect
 		err = device.Connect(30 * time.Second)
 		if err != nil {
-			log.Printf("Failed to connect: %v. Retrying in %v...", err, retryDelay)
-			time.Sleep(retryDelay)
+			// If BlueZ reports a DBus/WriteValue signature error, it's often
+			// transient right after a power-cycle; wait a bit longer before retrying
+			if strings.Contains(err.Error(), "WriteValue") {
+				log.Printf("Connect/initialize failed with WriteValue error: %v. Waiting longer before retrying...", err)
+				time.Sleep(5 * time.Second)
+			} else {
+				log.Printf("Failed to connect: %v. Retrying in %v...", err, retryDelay)
+				time.Sleep(retryDelay)
+			}
+			retryDelay = minDuration(maxDelay, retryDelay*2)
 			continue
 		}
 
@@ -747,42 +808,24 @@ func (d *Display) attemptReconnection() {
 		d.firstSendDone = false
 		log.Println("✓ Successfully reconnected to XYAOLED LED panel!")
 
-		// Set brightness
+		// Set a reasonable brightness baseline (best-effort)
 		if err := device.SetBrightness(80); err != nil {
 			log.Printf("Warning: failed to set brightness: %v", err)
 		}
 
-		// Redisplay last content if available
-		if d.lastGifData != nil {
-			log.Println("Restoring last displayed content...")
-			// Replay once (animated or static) using same send options as primary paths
-			d.animationSeq++
-			forceReinit := !d.firstSendDone
-			skipClear := d.config.SkipClear && d.firstSendDone
-			opts := d.sendOpts(forceReinit, false, skipClear)
-			go func(data []byte, isAnim bool, opts xyaoled.SendOptions) {
-				d.sendMutex.Lock()
-				defer d.sendMutex.Unlock()
-				log.Printf("[Display] Restoring last content (anim=%v, forceReinit=%v, skipClear=%v, staticHeader=%v)", isAnim, opts.ForceReinit, opts.SkipClear, opts.StaticHeader)
-				if err := d.device.SendGifWithOptions(data, opts); err != nil {
-					if isAnim {
-						log.Printf("Error restoring animated content: %v", err)
-					} else {
-						log.Printf("Error restoring static content: %v", err)
-					}
-				} else {
-					d.firstSendDone = true
-				}
-			}(d.lastGifData, d.lastGifIsAnim, opts)
-		} else {
-			// Load default.gif if no last content
-			if err := d.loadAndDisplayDefaultGif(); err != nil {
-				log.Printf("Warning: failed to load default.gif: %v", err)
-			}
-		}
+		// NOTE: by design we do NOT attempt to reload or resend any images here.
+		// The daemon should simply be ready for future sends.
 
 		return // Successfully reconnected
 	}
+}
+
+// minDuration returns the smaller of two durations
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Close disconnects from the LED panel

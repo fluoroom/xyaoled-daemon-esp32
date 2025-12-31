@@ -17,8 +17,6 @@ type Config struct {
 	SkipClear       bool
 	BestEffortClear bool
 	Tests           bool
-	ChunkLimits     bool
-	DivideGif       int
 
 	// Server settings
 	HTTPPort string
@@ -33,6 +31,8 @@ type Config struct {
 
 	// Reset settings
 	ResetInterval int // Send reset every N sends (0 = disabled)
+	// Whether to use ATT-sized chunking, pacing and pauses when sending GIFs
+	ChunkLimits bool
 }
 
 // LoadConfig loads configuration from .env file and environment variables
@@ -44,24 +44,13 @@ func LoadConfig() *Config {
 		SkipClear:       false,
 		BestEffortClear: false,
 		Tests:           false,
-		ChunkLimits:     true,
-		DivideGif:       0,
 		HTTPPort:        "11001",
 		HTTPHost:        "0.0.0.0",
 		DebugBLE:        false,
 		VerboseLogging:  false,
 		UpsideDown:      false,
 		ResetInterval:   0,
-	}
-	// ...existing code...
-	// After loading from file, override with environment variable
-	if val := os.Getenv("CHUNK_LIMITS"); val != "" {
-		cfg.ChunkLimits = strings.EqualFold(val, "true")
-	}
-	if val := os.Getenv("DIVIDE_GIF"); val != "" {
-		if v, err := strconv.Atoi(val); err == nil {
-			cfg.DivideGif = v
-		}
+		ChunkLimits:     true,
 	}
 
 	// Try to load .env, fall back to .env.example
@@ -108,12 +97,6 @@ func LoadConfig() *Config {
 				cfg.BestEffortClear = strings.EqualFold(value, "true")
 			case "TESTS":
 				cfg.Tests = strings.EqualFold(value, "true")
-			case "CHUNK_LIMITS":
-				cfg.ChunkLimits = strings.EqualFold(value, "true")
-			case "DIVIDE_GIF":
-				if v, err := strconv.Atoi(value); err == nil {
-					cfg.DivideGif = v
-				}
 			case "HTTP_PORT":
 				cfg.HTTPPort = value
 			case "HTTP_HOST":
@@ -128,6 +111,8 @@ func LoadConfig() *Config {
 				if v, err := strconv.Atoi(value); err == nil {
 					cfg.ResetInterval = v
 				}
+			case "CHUNK_LIMITS":
+				cfg.ChunkLimits = strings.EqualFold(value, "true")
 			}
 		}
 	}
@@ -174,6 +159,9 @@ func LoadConfig() *Config {
 		if v, err := strconv.Atoi(val); err == nil {
 			cfg.ResetInterval = v
 		}
+	}
+	if val := os.Getenv("CHUNK_LIMITS"); val != "" {
+		cfg.ChunkLimits = strings.EqualFold(val, "true")
 	}
 
 	return cfg

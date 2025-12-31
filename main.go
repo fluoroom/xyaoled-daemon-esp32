@@ -6,25 +6,24 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-
 	"xyaoled-daemon/xyaoled"
 )
 
 func main() {
-	// Load configuration
-	cfg := LoadConfig()
-	// Set up config provider for chunking logic
-	xyaoled.MainConfigProvider = func() bool {
-		return cfg.ChunkLimits
-	}
 	log.Println("XYAOLED Daemon - LED Display Server")
 	log.Println("====================================")
+
+	// Load configuration
+	cfg := LoadConfig()
 	log.Printf("Configuration loaded:")
 	log.Printf("  LED Panel MAC: %s", cfg.LEDPanelMAC)
 	log.Printf("  Display Size: %dx%d", cfg.DisplayWidth, cfg.DisplayHeight)
 	log.Printf("  Upside Down: %v", cfg.UpsideDown)
 	log.Printf("  HTTP Server: %s:%s", cfg.HTTPHost, cfg.HTTPPort)
 	log.Printf("  Debug BLE: %v", cfg.DebugBLE)
+
+	// Apply chunk limits config to BLE device sender behavior
+	xyaoled.SetChunkLimits(cfg.ChunkLimits)
 
 	// Create display
 	log.Println("Connecting to LED panel...")
