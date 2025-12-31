@@ -15,6 +15,9 @@ type Config struct {
 	DisplayWidth         int
 	DisplayHeight        int
 	FrameIntervalSeconds int // Number of seconds between frames
+	SkipClear            bool
+	BestEffortClear      bool
+	Tests                bool
 
 	// Server settings
 	HTTPPort string
@@ -35,6 +38,9 @@ func LoadConfig() *Config {
 		DisplayWidth:         96,
 		DisplayHeight:        16,
 		FrameIntervalSeconds: 1,
+		SkipClear:            false,
+		BestEffortClear:      false,
+		Tests:                false,
 		HTTPPort:             "11001",
 		HTTPHost:             "0.0.0.0",
 		DebugBLE:             false,
@@ -84,6 +90,12 @@ func LoadConfig() *Config {
 				if v, err := strconv.Atoi(value); err == nil {
 					cfg.FrameIntervalSeconds = v
 				}
+			case "SKIP_CLEAR":
+				cfg.SkipClear = strings.EqualFold(value, "true")
+			case "BEST_EFFORT_CLEAR":
+				cfg.BestEffortClear = strings.EqualFold(value, "true")
+			case "TESTS":
+				cfg.Tests = strings.EqualFold(value, "true")
 			case "HTTP_PORT":
 				cfg.HTTPPort = value
 			case "HTTP_HOST":
@@ -116,6 +128,15 @@ func LoadConfig() *Config {
 		if v, err := strconv.Atoi(val); err == nil {
 			cfg.FrameIntervalSeconds = v
 		}
+	}
+	if val := os.Getenv("SKIP_CLEAR"); val != "" {
+		cfg.SkipClear = strings.EqualFold(val, "true")
+	}
+	if val := os.Getenv("BEST_EFFORT_CLEAR"); val != "" {
+		cfg.BestEffortClear = strings.EqualFold(val, "true")
+	}
+	if val := os.Getenv("TESTS"); val != "" {
+		cfg.Tests = strings.EqualFold(val, "true")
 	}
 	if val := os.Getenv("HTTP_PORT"); val != "" {
 		cfg.HTTPPort = val

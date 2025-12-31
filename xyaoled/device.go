@@ -22,8 +22,8 @@ const (
 	maxChunkSize  = 20
 	defaultSlot   = 0x07
 	staticSlot    = 0x04
-	maxBrightness = 100
-	minBrightness = 1
+	maxBrightness = 125
+	minBrightness = 0
 
 	// Timing constants
 	initDelay        = 300 * time.Millisecond
@@ -68,6 +68,8 @@ type SendOptions struct {
 	BestEffortClear bool
 	ForceReinit     bool
 	StaticHeader    bool
+	LogHeader       bool
+	SlotOverride    *uint8
 }
 
 // NewDevice creates a new XYAOLED device instance
@@ -461,7 +463,7 @@ func (d *Device) send(data []byte) error {
 	return err
 }
 
-// SetBrightness sets the display brightness (1-100)
+// SetBrightness sets the display brightness (0-125 observed)
 // Ported from Node.js setBrightness() method
 func (d *Device) SetBrightness(level uint8) error {
 	if !d.isConnected {
@@ -483,7 +485,7 @@ func (d *Device) SetBrightness(level uint8) error {
 
 	d.currentBright = level
 
-	// Calculate third byte (level * 0.8)
+	// Calculate third byte (level * 0.8) per observed protocol
 	thirdByte := uint8(float32(level) * 0.8)
 
 	if d.debug {
@@ -558,6 +560,23 @@ func (d *Device) buildStaticGifPacket(gifData []byte, slot byte) []byte {
 	packet = append(packet, header...)
 	packet = append(packet, uint8(totalSize&0xff), uint8((totalSize>>8)&0xff))
 	packet = append(packet, headerFields...)
+	packet = append(packet, gifData...)
+	return packet
+}
+
+// buildLogCompatPacket constructs a packet using the header observed in singleslog.txt
+// Header bytes (after length): 52 09 07 02 <slot> 3a 09 00 02 00 01 01 00 00 01 00 08 00
+func (d *Device) buildLogCompatPacket(gifData []byte, slot byte) []byte {
+	header := []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88}
+	headFields := []byte{0x52, 0x09, 0x07, 0x02, slot, 0x3a, 0x09, 0x00, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00}
+
+	headerSize := len(header) + 2 + len(headFields)
+	totalSize := headerSize + len(gifData)
+
+	packet := make([]byte, 0, totalSize)
+	packet = append(packet, header...)
+	packet = append(packet, uint8(totalSize&0xff), uint8((totalSize>>8)&0xff))
+	packet = append(packet, headFields...)
 	packet = append(packet, gifData...)
 	return packet
 }
@@ -687,10 +706,13 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 		}
 	}
 
-	// Select slot command (use dedicated static slot when requested)
+	// Select slot command (use dedicated static slot when requested, allow override)
 	slot := d.slot
 	if opts.StaticHeader {
 		slot = staticSlot
+	}
+	if opts.SlotOverride != nil {
+		slot = *opts.SlotOverride
 	}
 	if d.debug {
 		fmt.Printf("[BLE] Selecting slot 0x%02x...\n", slot)
@@ -701,9 +723,11 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 	}
 	time.Sleep(commandDelay)
 
-	// Build complete packet (static vs animated/header style)
+	// Build complete packet (log-compat, static, or animated/header style)
 	var packet []byte
-	if opts.StaticHeader {
+	if opts.LogHeader {
+		packet = d.buildLogCompatPacket(gifBuffer, slot)
+	} else if opts.StaticHeader {
 		packet = d.buildStaticGifPacket(gifBuffer, slot)
 	} else {
 		packet = d.buildGifPacket(gifBuffer)

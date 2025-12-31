@@ -37,6 +37,7 @@ func main() {
 	http.HandleFunc("/display", handler.HandleDisplay)
 	http.HandleFunc("/health", handler.HandleHealth)
 	http.HandleFunc("/upload", handler.HandleUpload)
+	http.HandleFunc("/uploadTest", handler.HandleUploadTest)
 
 	// Start server
 	addr := cfg.HTTPHost + ":" + cfg.HTTPPort
@@ -46,6 +47,8 @@ func main() {
 	log.Println("  GET  /health  - Health check")
 	log.Println("  GET  /upload  - Upload form")
 	log.Println("  POST /upload  - Upload file")
+	log.Println("  GET  /uploadTest - Manual test harness")
+	log.Println("  POST /uploadTest - Run scripted command")
 
 	// Handle graceful shutdown
 	go func() {

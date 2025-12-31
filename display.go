@@ -33,6 +33,17 @@ type Display struct {
 	lastGifData          []byte     // Store last displayed content for redisplay after reconnect
 	lastGifIsAnim        bool       // Track if last content was animated
 	sendMutex            sync.Mutex // Prevent concurrent sends to device
+	firstSendDone        bool       // Track first send after connection
+	prevBrightness       uint8      // Remember last non-dim brightness for screen on/off experiments
+}
+
+func (d *Display) sendOpts(forceReinit bool, staticHeader bool, skipClear bool) xyaoled.SendOptions {
+	return xyaoled.SendOptions{
+		ForceReinit:     forceReinit,
+		StaticHeader:    staticHeader,
+		SkipClear:       skipClear,
+		BestEffortClear: d.config.BestEffortClear,
+	}
 }
 
 // sendBlackFrame clears the panel with a black full-screen frame
@@ -85,6 +96,8 @@ func NewDisplay(cfg *Config) (*Display, error) {
 		debugBLE:             cfg.DebugBLE,
 		config:               cfg,
 		reconnecting:         false,
+		firstSendDone:        false,
+		prevBrightness:       100,
 	}
 
 	// Start connection monitor
@@ -126,13 +139,17 @@ func (d *Display) loadAndDisplayDefaultGif() error {
 	}
 
 	// Send to device once (no animation) with static header; skip clear to match vendor behavior
+	opts := d.sendOpts(false, true, d.config.SkipClear)
+	// Default splash display previously used SkipClear; honor config flag now.
+	log.Printf("[Display] Sending static image (forceReinit=%v, skipClear=%v, staticHeader=%v)", opts.ForceReinit, opts.SkipClear, opts.StaticHeader)
 	d.sendMutex.Lock()
-	err = d.device.SendGifWithOptions(gifData, xyaoled.SendOptions{StaticHeader: true, SkipClear: true})
+	sendErr := d.device.SendGifWithOptions(gifData, opts)
 	d.sendMutex.Unlock()
-
-	if err != nil {
-		return fmt.Errorf("failed to send default.gif: %w", err)
+	if sendErr != nil {
+		return fmt.Errorf("failed to send default.gif: %w", sendErr)
 	}
+	// Treat default as first successful send after connection
+	d.firstSendDone = true
 
 	log.Println("✓ Displayed default.gif on LED panel")
 	return nil
@@ -156,13 +173,16 @@ func (d *Display) ShowImage(base64Data string) error {
 		log.Printf("[Display] Decoded %s image: %dx%d", format, img.Bounds().Dx(), img.Bounds().Dy())
 	}
 
-	// Clear previous content with a black frame (match animated path)
-	if err := d.sendBlackFrame(); err != nil {
-		log.Printf("Warning: failed to clear panel before static image: %v", err)
+	isFirstSend := !d.firstSendDone
+	// Clear previous content unless globally skipping, but allow one-time clear on first send when skipping.
+	if !d.config.SkipClear || isFirstSend {
+		if err := d.sendBlackFrame(); err != nil {
+			log.Printf("Warning: failed to clear panel before static image: %v", err)
+		}
 	}
 
-	// Resize and convert to GIF
-	gifData, err := d.processImage(img)
+	// Resize and convert to single-frame animated GIF to reuse animated send path
+	gifData, err := d.processStaticAsAnimated(img)
 	if err != nil {
 		return fmt.Errorf("failed to process image: %w", err)
 	}
@@ -174,13 +194,23 @@ func (d *Display) ShowImage(base64Data string) error {
 	// Stop any running animation/refresh loops
 	d.animationSeq++
 
-	// Send once with reinit to flush any queued playlist/state (same approach as animated)
+	// Send via animated path (even single-frame). Keep force reinit to reset playlists/state.
+	forceReinit := true
+	skipClear := d.config.SkipClear && !isFirstSend
+	opts := d.sendOpts(forceReinit, false, skipClear)
+	// Match captured log header and slot (0x05) for static sends.
+	logSlot := uint8(0x05)
+	opts.LogHeader = true
+	opts.SlotOverride = &logSlot
 	d.sendMutex.Lock()
-	sendErr := d.device.SendGifWithOptions(gifData, xyaoled.SendOptions{ForceReinit: true})
+	sendErr := d.device.SendGifWithOptions(gifData, opts)
 	d.sendMutex.Unlock()
 	if sendErr != nil {
 		return fmt.Errorf("failed to send static image: %w", sendErr)
 	}
+
+	// Mark first successful send after connection
+	d.firstSendDone = true
 
 	return nil
 }
@@ -203,13 +233,16 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 		log.Printf("[Display] Decoded animated GIF: %d frames", len(gifImg.Image))
 	}
 
-	// Clear previous content with a black frame
-	if err := d.sendBlackFrame(); err != nil {
-		log.Printf("Warning: failed to clear panel before animation: %v", err)
+	isFirstSend := !d.firstSendDone
+	// Clear previous content unless globally skipping, but allow one-time clear on first send when skipping.
+	if !d.config.SkipClear || isFirstSend {
+		if err := d.sendBlackFrame(); err != nil {
+			log.Printf("Warning: failed to clear panel before animation: %v", err)
+		}
 	}
 
 	// Process and re-encode with sizing/rotation while preserving delays/looping
-	processedGif, err := d.processAnimatedGif(gifImg)
+	processedGif, err := d.processAnimatedGifWithLoop(gifImg, true)
 	if err != nil {
 		return fmt.Errorf("failed to process animated GIF: %w", err)
 	}
@@ -221,13 +254,20 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 	d.lastGifData = processedGif
 	d.lastGifIsAnim = true
 
-	// Send once with reinit to flush any queued playlist/state; LoopCount was forced to 0 in processing
+	// Send once with optional init/clear rules; LoopCount was forced to 0 in processing
+	forceReinit := isFirstSend
+	skipClear := d.config.SkipClear && !isFirstSend
+	opts := d.sendOpts(forceReinit, false, skipClear)
+	log.Printf("[Display] Sending animated GIF (forceReinit=%v, skipClear=%v, staticHeader=%v)", opts.ForceReinit, opts.SkipClear, opts.StaticHeader)
 	d.sendMutex.Lock()
-	err = d.device.SendGifWithOptions(processedGif, xyaoled.SendOptions{ForceReinit: true})
+	sendErr := d.device.SendGifWithOptions(processedGif, opts)
 	d.sendMutex.Unlock()
-	if err != nil {
-		return fmt.Errorf("failed to send animated GIF: %w", err)
+	if sendErr != nil {
+		return fmt.Errorf("failed to send animated GIF: %w", sendErr)
 	}
+
+	// Mark first successful send after connection
+	d.firstSendDone = true
 
 	return nil
 }
@@ -249,10 +289,84 @@ func (d *Display) processImage(img image.Image) ([]byte, error) {
 	return d.imageToGif(resized)
 }
 
-// processAnimatedGif resizes all frames, applies optional rotation, and re-encodes preserving delays/looping
+// processStaticAsAnimated encodes a single-frame image as an animated-style GIF (looping) to reuse the animated send path.
+func (d *Display) processStaticAsAnimated(img image.Image) ([]byte, error) {
+	// Resize and rotate like animated path
+	resized := d.resizeImage(img, d.width, d.height)
+	if d.config.UpsideDown {
+		resized = rotate180(resized)
+	}
+
+	// Ensure RGBA and flatten onto opaque black
+	rgba := image.NewRGBA(resized.Bounds())
+	for i := 0; i < len(rgba.Pix); i += 4 {
+		rgba.Pix[i] = 0
+		rgba.Pix[i+1] = 0
+		rgba.Pix[i+2] = 0
+		rgba.Pix[i+3] = 255
+	}
+	draw.Draw(rgba, resized.Bounds(), resized, resized.Bounds().Min, draw.Over)
+
+	// Build palette
+	colorMap := make(map[color.RGBA]bool)
+	pix := rgba.Pix
+	stride := rgba.Stride
+	rect := rgba.Rect
+
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			i := (y-rect.Min.Y)*stride + (x-rect.Min.X)*4
+			col := color.RGBA{R: pix[i], G: pix[i+1], B: pix[i+2], A: pix[i+3]}
+			colorMap[col] = true
+			if len(colorMap) >= 256 {
+				break
+			}
+		}
+		if len(colorMap) >= 256 {
+			break
+		}
+	}
+
+	palette := make(color.Palette, 0, len(colorMap))
+	for col := range colorMap {
+		palette = append(palette, col)
+		if len(palette) >= 256 {
+			break
+		}
+	}
+	if len(palette) == 0 {
+		palette = append(palette, color.RGBA{0, 0, 0, 255})
+	}
+
+	paletted := image.NewPaletted(rgba.Bounds(), palette)
+	draw.FloydSteinberg.Draw(paletted, rgba.Bounds(), rgba, image.Point{})
+
+	out := &gif.GIF{
+		Image:     []*image.Paletted{paletted},
+		Delay:     []int{60000}, // long hold to avoid splash
+		LoopCount: 0,            // infinite
+	}
+
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, out); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// processAnimatedGif resizes all frames, applies optional rotation, and re-encodes preserving delays/looping (infinite by default)
 func (d *Display) processAnimatedGif(src *gif.GIF) ([]byte, error) {
+	return d.processAnimatedGifWithLoop(src, true)
+}
+
+// processAnimatedGifWithLoop allows choosing infinite (loop count 0) or single-loop (1) behavior.
+func (d *Display) processAnimatedGifWithLoop(src *gif.GIF, loopInfinite bool) ([]byte, error) {
 	var out gif.GIF
-	out.LoopCount = 0 // Always loop forever; the device ignores non-zero loop counts for repeat, so force 0 (infinite)
+	if loopInfinite {
+		out.LoopCount = 0 // infinite
+	} else {
+		out.LoopCount = 1
+	}
 
 	// Fallback delay derived from configured frameDelay (centiseconds)
 	fallbackDelay := 5 // Fallback delay (centiseconds) for frames with zero delay; use a small sane default (50ms)
@@ -387,17 +501,23 @@ func (d *Display) imageToGif(img image.Image) ([]byte, error) {
 	var buf bytes.Buffer
 	bounds := img.Bounds()
 
-	// For RGBA images, directly access pixels
+	// For RGBA images, directly access pixels; otherwise convert.
 	rgbaImg, ok := img.(*image.RGBA)
 	if !ok {
-		// Convert to RGBA first
 		rgbaImg = image.NewRGBA(bounds)
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				rgbaImg.Set(x, y, img.At(x, y))
-			}
-		}
+		draw.Draw(rgbaImg, bounds, img, bounds.Min, draw.Src)
 	}
+
+	// Flatten onto opaque black to avoid transparency leaks on device background.
+	opaque := image.NewRGBA(bounds)
+	for i := 0; i < len(opaque.Pix); i += 4 {
+		opaque.Pix[i] = 0
+		opaque.Pix[i+1] = 0
+		opaque.Pix[i+2] = 0
+		opaque.Pix[i+3] = 255
+	}
+	draw.Draw(opaque, bounds, rgbaImg, bounds.Min, draw.Over)
+	rgbaImg = opaque
 
 	// Build custom palette from unique colors (single pass)
 	colorMap := make(map[color.RGBA]bool)
@@ -519,6 +639,7 @@ func (d *Display) attemptReconnection() {
 
 		// Success!
 		d.device = device
+		d.firstSendDone = false
 		log.Println("✓ Successfully reconnected to XYAOLED LED panel!")
 
 		// Set brightness
@@ -531,17 +652,23 @@ func (d *Display) attemptReconnection() {
 			log.Println("Restoring last displayed content...")
 			// Replay once (animated or static) using same send options as primary paths
 			d.animationSeq++
-			go func(data []byte, isAnim bool) {
+			forceReinit := !d.firstSendDone
+			skipClear := d.config.SkipClear && d.firstSendDone
+			opts := d.sendOpts(forceReinit, false, skipClear)
+			go func(data []byte, isAnim bool, opts xyaoled.SendOptions) {
 				d.sendMutex.Lock()
 				defer d.sendMutex.Unlock()
-				if err := d.device.SendGifWithOptions(data, xyaoled.SendOptions{ForceReinit: true}); err != nil {
+				log.Printf("[Display] Restoring last content (anim=%v, forceReinit=%v, skipClear=%v, staticHeader=%v)", isAnim, opts.ForceReinit, opts.SkipClear, opts.StaticHeader)
+				if err := d.device.SendGifWithOptions(data, opts); err != nil {
 					if isAnim {
 						log.Printf("Error restoring animated content: %v", err)
 					} else {
 						log.Printf("Error restoring static content: %v", err)
 					}
+				} else {
+					d.firstSendDone = true
 				}
-			}(d.lastGifData, d.lastGifIsAnim)
+			}(d.lastGifData, d.lastGifIsAnim, opts)
 		} else {
 			// Load default.gif if no last content
 			if err := d.loadAndDisplayDefaultGif(); err != nil {
