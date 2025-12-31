@@ -1,11 +1,4 @@
-// mainConfigProvider is a function that returns the current ChunkLimits config (for injection from main)
-var mainConfigProvider func() bool
-// Package xyaoled provides a native Go implementation of the XYAOLED BLE LED display protocol.
-// This is a professional reverse-engineering port from the Node.js leo library.
-
 package xyaoled
-// mainConfigProvider is a function that returns the current ChunkLimits config (for injection from main)
-var mainConfigProvider func() bool
 
 import (
 	"bytes"
@@ -16,6 +9,9 @@ import (
 
 	"tinygo.org/x/bluetooth"
 )
+
+// MainConfigProvider is a function that returns the current ChunkLimits config (for injection from main)
+var MainConfigProvider func() bool
 
 const (
 	// BLE Service and Characteristic UUIDs
@@ -619,11 +615,7 @@ func (d *Device) SendGif(gifBuffer []byte) error {
 
 // SendGifWithOptions sends a GIF buffer with configurable behavior
 func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
-	// Check for chunk limits config
-	chunkLimits := true
-	if mainConfigProvider != nil {
-		chunkLimits = mainConfigProvider()
-	}
+	// No chunkLimits logic here; handled in sendGifAttempt
 	// Defaults
 	if !opts.BestEffortClear {
 		opts.BestEffortClear = true
@@ -663,6 +655,11 @@ func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
 
 // sendGifAttempt performs a single attempt to send the GIF
 func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
+	// Check for chunk limits config
+	chunkLimits := true
+	if MainConfigProvider != nil {
+		chunkLimits = MainConfigProvider()
+	}
 	if !d.isConnected {
 		return errors.New("device not connected")
 	}
@@ -747,60 +744,60 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 		fmt.Printf("[BLE] Built packet: %d bytes total (header: 24, data: %d)\n", len(packet), len(gifBuffer))
 	}
 
-		if !chunkLimits {
-			// Send all at once, no chunking or pacing
-			if d.debug {
-				fmt.Println("[BLE] Sending full packet in one go (CHUNK_LIMITS=false)")
-			}
-			if err := d.send(packet); err != nil {
-				return fmt.Errorf("failed to send packet: %w", err)
-			}
+	if !chunkLimits {
+		// Send all at once, no chunking or pacing
+		if d.debug {
+			fmt.Println("[BLE] Sending full packet in one go (CHUNK_LIMITS=false)")
+		}
+		if err := d.send(packet); err != nil {
+			return fmt.Errorf("failed to send packet: %w", err)
+		}
+	} else {
+		// Determine chunk delay based on GIF size (short, vendor-like pacing)
+		var chunkDelay time.Duration
+		if len(gifBuffer) > gifSizeThreshold {
+			chunkDelay = largeGifDelay
 		} else {
-			// Determine chunk delay based on GIF size (short, vendor-like pacing)
-			var chunkDelay time.Duration
-			if len(gifBuffer) > gifSizeThreshold {
-				chunkDelay = largeGifDelay
-			} else {
-				chunkDelay = smallGifDelay
+			chunkDelay = smallGifDelay
+		}
+
+		// Send packet in smaller ATT-sized chunks with periodic pauses to mimic vendor pacing
+		offset := 0
+		chunkNum := 0
+		totalChunks := (len(packet) + maxChunkSize - 1) / maxChunkSize
+		bytesSincePause := 0
+
+		for offset < len(packet) {
+			end := offset + maxChunkSize
+			if end > len(packet) {
+				end = len(packet)
 			}
 
-			// Send packet in smaller ATT-sized chunks with periodic pauses to mimic vendor pacing
-			offset := 0
-			chunkNum := 0
-			totalChunks := (len(packet) + maxChunkSize - 1) / maxChunkSize
-			bytesSincePause := 0
+			chunk := packet[offset:end]
+			chunkNum++
 
-			for offset < len(packet) {
-				end := offset + maxChunkSize
-				if end > len(packet) {
-					end = len(packet)
-				}
+			if d.debug {
+				fmt.Printf("[BLE] Sending chunk %d/%d (%d bytes)...\n", chunkNum, totalChunks, len(chunk))
+			}
 
-				chunk := packet[offset:end]
-				chunkNum++
+			if err := d.send(chunk); err != nil {
+				return fmt.Errorf("failed to send chunk: %w", err)
+			}
 
+			offset += maxChunkSize
+			bytesSincePause += len(chunk)
+
+			time.Sleep(chunkDelay)
+
+			if bytesSincePause >= burstPaceBytes {
 				if d.debug {
-					fmt.Printf("[BLE] Sending chunk %d/%d (%d bytes)...\n", chunkNum, totalChunks, len(chunk))
+					fmt.Printf("[BLE] Pausing %v after %d bytes to match vendor pacing...\n", burstPause, bytesSincePause)
 				}
-
-				if err := d.send(chunk); err != nil {
-					return fmt.Errorf("failed to send chunk: %w", err)
-				}
-
-				offset += maxChunkSize
-				bytesSincePause += len(chunk)
-
-				time.Sleep(chunkDelay)
-
-				if bytesSincePause >= burstPaceBytes {
-					if d.debug {
-						fmt.Printf("[BLE] Pausing %v after %d bytes to match vendor pacing...\n", burstPause, bytesSincePause)
-					}
-					time.Sleep(burstPause)
-					bytesSincePause = 0
-				}
+				time.Sleep(burstPause)
+				bytesSincePause = 0
 			}
 		}
+	}
 
 	// Wait for device to finish processing
 	if d.debug {

@@ -51,8 +51,8 @@ func LoadConfig() *Config {
 		UpsideDown:      false,
 		ResetInterval:   0,
 	}
-			case "CHUNK_LIMITS":
-				cfg.ChunkLimits = strings.EqualFold(value, "true")
+	// ...existing code...
+	// After loading from file, override with environment variable
 	if val := os.Getenv("CHUNK_LIMITS"); val != "" {
 		cfg.ChunkLimits = strings.EqualFold(val, "true")
 	}
@@ -84,40 +84,40 @@ func LoadConfig() *Config {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
 
-		   switch key {
-		   case "LED_PANEL_MAC":
-			   cfg.LEDPanelMAC = value
-		   case "LED_DISPLAY_WIDTH":
-			   if v, err := strconv.Atoi(value); err == nil {
-				   cfg.DisplayWidth = v
-			   }
-		   case "LED_DISPLAY_HEIGHT":
-			   if v, err := strconv.Atoi(value); err == nil {
-				   cfg.DisplayHeight = v
-			   }
-		   case "SKIP_CLEAR":
-			   cfg.SkipClear = strings.EqualFold(value, "true")
-		   case "BEST_EFFORT_CLEAR":
-			   cfg.BestEffortClear = strings.EqualFold(value, "true")
-		   case "TESTS":
-			   cfg.Tests = strings.EqualFold(value, "true")
-		   case "CHUNK_LIMITS":
-			   cfg.ChunkLimits = strings.EqualFold(value, "true")
-		   case "HTTP_PORT":
-			   cfg.HTTPPort = value
-		   case "HTTP_HOST":
-			   cfg.HTTPHost = value
-		   case "DEBUG_BLE":
-			   cfg.DebugBLE = value == "true"
-		   case "VERBOSE_LOGGING":
-			   cfg.VerboseLogging = value == "true"
-		   case "UPSIDE_DOWN":
-			   cfg.UpsideDown = value == "true"
-		   case "RESET_INTERVAL":
-			   if v, err := strconv.Atoi(value); err == nil {
-				   cfg.ResetInterval = v
-			   }
-		   }
+			switch key {
+			case "LED_PANEL_MAC":
+				cfg.LEDPanelMAC = value
+			case "LED_DISPLAY_WIDTH":
+				if v, err := strconv.Atoi(value); err == nil {
+					cfg.DisplayWidth = v
+				}
+			case "LED_DISPLAY_HEIGHT":
+				if v, err := strconv.Atoi(value); err == nil {
+					cfg.DisplayHeight = v
+				}
+			case "SKIP_CLEAR":
+				cfg.SkipClear = strings.EqualFold(value, "true")
+			case "BEST_EFFORT_CLEAR":
+				cfg.BestEffortClear = strings.EqualFold(value, "true")
+			case "TESTS":
+				cfg.Tests = strings.EqualFold(value, "true")
+			case "CHUNK_LIMITS":
+				cfg.ChunkLimits = strings.EqualFold(value, "true")
+			case "HTTP_PORT":
+				cfg.HTTPPort = value
+			case "HTTP_HOST":
+				cfg.HTTPHost = value
+			case "DEBUG_BLE":
+				cfg.DebugBLE = value == "true"
+			case "VERBOSE_LOGGING":
+				cfg.VerboseLogging = value == "true"
+			case "UPSIDE_DOWN":
+				cfg.UpsideDown = value == "true"
+			case "RESET_INTERVAL":
+				if v, err := strconv.Atoi(value); err == nil {
+					cfg.ResetInterval = v
+				}
+			}
 		}
 	}
 

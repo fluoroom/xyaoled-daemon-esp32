@@ -1,7 +1,4 @@
-import "./xyaoled"
 package main
-
-import "./xyaoled"
 
 import (
 	"log"
@@ -9,18 +6,19 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"xyaoled-daemon/xyaoled"
 )
 
 func main() {
+	// Load configuration
+	cfg := LoadConfig()
 	// Set up config provider for chunking logic
 	xyaoled.MainConfigProvider = func() bool {
-		return config.ChunkLimits
+		return cfg.ChunkLimits
 	}
 	log.Println("XYAOLED Daemon - LED Display Server")
 	log.Println("====================================")
-
-	// Load configuration
-	cfg := LoadConfig()
 	log.Printf("Configuration loaded:")
 	log.Printf("  LED Panel MAC: %s", cfg.LEDPanelMAC)
 	log.Printf("  Display Size: %dx%d", cfg.DisplayWidth, cfg.DisplayHeight)
