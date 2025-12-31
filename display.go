@@ -217,6 +217,11 @@ func (d *Display) ShowImage(base64Data string) error {
 
 // ShowImageNoReinit displays a single image without reinit/clear, using the log-compatible header/slot.
 func (d *Display) ShowImageNoReinit(base64Data string) error {
+	// Ensure connected (reuse experimental connect helper)
+	if err := d.experimentalConnect(); err != nil {
+		return fmt.Errorf("failed to connect to device: %w", err)
+	}
+
 	imgData, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return fmt.Errorf("failed to decode base64: %w", err)
@@ -321,6 +326,11 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 
 // ShowAnimatedGifNoReinit displays an animated GIF without reinit/clear (infinite loop by default).
 func (d *Display) ShowAnimatedGifNoReinit(base64Data string, loopInfinite bool) error {
+	// Ensure connected
+	if err := d.experimentalConnect(); err != nil {
+		return fmt.Errorf("failed to connect to device: %w", err)
+	}
+
 	imgData, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return fmt.Errorf("failed to decode base64: %w", err)
