@@ -119,9 +119,10 @@ while our implementation only processes 6 frames from an 18-frame GIF.
 <label>Send Mode:</label>
 <select name="mode" id="mode">
 <option value="standard">Standard (Current Implementation)</option>
+<option value="chunked-88ff">🚀 Chunked 88ff Protocol (NEW - 18+ frames!)</option>
 <option value="raw">Raw (No Processing)</option>
 <option value="noresize">No Resize (Keep Original Size)</option>
-<option value="chunked">Chunked Upload (Test Pacing)</option>
+<option value="chunked">Chunked Upload (Test Pacing - Legacy)</option>
 </select>
 </div>
 

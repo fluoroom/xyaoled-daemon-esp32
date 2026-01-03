@@ -868,6 +868,206 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 	return nil
 }
 
+// ========================================================================
+// 88ff Chunked Protocol Implementation
+// ========================================================================
+// Based on bluetooth dump analysis from lonelygifsmall.txt
+// The vendor app uses two protocols:
+// - 99aa: Command/control protocol (init, headers, transitions)
+// - 88ff: Data transfer protocol (frame pixel data in chunks)
+//
+// This allows unlimited frames by chunking data into 20-byte writes
+// instead of trying to send everything in one large write.
+
+// Send88ffChunk sends a single data chunk using the 88ff protocol.
+// frameId: Frame number (0-based)
+// chunkId: Chunk number within the frame (0-based)
+// data: Payload data (typically 20 bytes or less for final chunk)
+func (d *Device) Send88ffChunk(frameId, chunkId byte, data []byte) error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+
+	// Build 88ff protocol packet: [0x88, 0xff, frameId, chunkId, ...data]
+	packet := make([]byte, 0, 4+len(data))
+	packet = append(packet, 0x88, 0xff)
+	packet = append(packet, frameId, chunkId)
+	packet = append(packet, data...)
+
+	if d.debug {
+		fmt.Printf("[BLE] Sending 88ff chunk: frame=%d chunk=%d size=%d\n", frameId, chunkId, len(data))
+	}
+
+	_, err := d.writeChar.WriteWithoutResponse(packet)
+	if err != nil {
+		return fmt.Errorf("failed to write 88ff chunk: %w", err)
+	}
+
+	// Small delay between chunks to avoid overwhelming device
+	time.Sleep(chunkDelay88ff)
+	return nil
+}
+
+// SendFrameCommand sends a 99aa protocol command.
+// subcmd: Subcommand byte (0x0f=init, 0x1f=frame header, 0x11=control, 0x0d=finalize)
+// params: Command-specific parameters
+func (d *Device) SendFrameCommand(subcmd byte, params []byte) error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+
+	// Build 99aa protocol packet: [0x99, 0xaa, length_low, length_high, 0xff, 0x88, subcmd, ...params]
+	payloadLen := 4 + len(params) // ff88 + subcmd + params
+	packet := make([]byte, 0, 4+payloadLen)
+	packet = append(packet, 0x99, 0xaa)
+	packet = append(packet, byte(payloadLen&0xff), byte((payloadLen>>8)&0xff)) // Little-endian length
+	packet = append(packet, 0xff, 0x88, subcmd)
+	packet = append(packet, params...)
+
+	if d.debug {
+		fmt.Printf("[BLE] Sending 99aa command: subcmd=0x%02x params_len=%d\n", subcmd, len(params))
+	}
+
+	_, err := d.writeChar.WriteWithoutResponse(packet)
+	if err != nil {
+		return fmt.Errorf("failed to write frame command: %w", err)
+	}
+
+	time.Sleep(commandDelay)
+	return nil
+}
+
+// chunkData splits data into chunks of specified size
+func chunkData(data []byte, chunkSize int) [][]byte {
+	if chunkSize <= 0 {
+		chunkSize = dataChunkSize
+	}
+
+	var chunks [][]byte
+	for i := 0; i < len(data); i += chunkSize {
+		end := i + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		chunks = append(chunks, data[i:end])
+	}
+	return chunks
+}
+
+// SendGifWithChunkedProtocol sends an animated GIF using the 88ff chunked protocol.
+// This allows sending GIFs with 18+ frames by chunking the data transfer.
+//
+// Protocol sequence per frame:
+//  1. Send 99aa init command (first frame only)
+//  2. Send 99aa frame header with timing/display params
+//  3. Send frame pixel data in 20-byte chunks via 88ff
+//  4. Send 99aa frame control command
+//  5. Repeat for each frame
+//  6. Send 99aa finalize command
+func (d *Device) SendGifWithChunkedProtocol(gifData []byte, frameCount int) error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+
+	if d.debug {
+		fmt.Printf("[BLE] Starting chunked protocol send: %d bytes, %d frames\n", len(gifData), frameCount)
+	}
+
+	// Step 1: Send initialization command (0x0f)
+	// Format observed: 0f 00 0a 00 01 00 00 00 00
+	initParams := []byte{0x00, 0x0a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}
+	if err := d.SendFrameCommand(cmdSubInit, initParams); err != nil {
+		return fmt.Errorf("init command failed: %w", err)
+	}
+
+	// Parse GIF to extract individual frames
+	g, err := gif.DecodeAll(bytes.NewReader(gifData))
+	if err != nil {
+		return fmt.Errorf("failed to decode GIF: %w", err)
+	}
+
+	if d.debug {
+		fmt.Printf("[BLE] Decoded GIF: %d frames\n", len(g.Image))
+	}
+
+	// Step 2-5: Process each frame
+	for frameIdx, img := range g.Image {
+		if d.debug {
+			fmt.Printf("[BLE] Processing frame %d/%d\n", frameIdx+1, len(g.Image))
+		}
+
+		// Get frame delay (in centiseconds, convert to useful format)
+		delay := uint16(0x0100) // Default delay
+		if frameIdx < len(g.Delay) && g.Delay[frameIdx] > 0 {
+			delay = uint16(g.Delay[frameIdx])
+		}
+
+		// Send frame header command (0x1f)
+		// Format observed: 1f 00 00 00 02 00 1a 01 03 11 15 1c 06 01 00 09 20 71 86 8e bf 00 00 00 00
+		// This contains timing, dimensions, and display parameters
+		frameHeaderParams := []byte{
+			0x00, 0x00, 0x00, byte(frameIdx + 1), // Frame sequence
+			0x00, 0x1a, 0x01, 0x03,               // Display parameters
+			0x11, 0x15, 0x1c, 0x06,               // More parameters
+			0x01, 0x00,                           // Flags
+			byte(delay & 0xff), byte((delay >> 8) & 0xff), // Delay
+			0x71, 0x86, 0x8e, 0xbf, // Additional params
+			0x00, 0x00, 0x00, 0x00, // Padding
+		}
+		if err := d.SendFrameCommand(cmdSubFrameHeader, frameHeaderParams); err != nil {
+			return fmt.Errorf("frame %d header failed: %w", frameIdx, err)
+		}
+
+		// Convert frame image to raw pixel data
+		bounds := img.Bounds()
+		frameData := make([]byte, 0, bounds.Dx()*bounds.Dy()*3) // RGB data
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				r, g, b, _ := img.At(x, y).RGBA()
+				frameData = append(frameData, byte(r>>8), byte(g>>8), byte(b>>8))
+			}
+		}
+
+		// Send frame data in chunks via 88ff protocol
+		chunks := chunkData(frameData, dataChunkSize)
+		for chunkIdx, chunk := range chunks {
+			if err := d.Send88ffChunk(byte(frameIdx), byte(chunkIdx), chunk); err != nil {
+				return fmt.Errorf("frame %d chunk %d failed: %w", frameIdx, chunkIdx, err)
+			}
+		}
+
+		// Send frame control command (0x11)
+		// Format observed: 11 00 05 00 03 01 01 00 00 00 00
+		frameControlParams := []byte{
+			0x00, 0x05, 0x00, byte(frameIdx + 1),
+			0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+		}
+		if err := d.SendFrameCommand(cmdSubFrameControl, frameControlParams); err != nil {
+			return fmt.Errorf("frame %d control failed: %w", frameIdx, err)
+		}
+	}
+
+	// Step 6: Send finalize command (0x0d)
+	// Format observed: 0d 00 04 02 04 ff 00
+	finalizeParams := []byte{0x00, 0x04, 0x02, 0x04, 0xff, 0x00}
+	if err := d.SendFrameCommand(cmdSubFinalize, finalizeParams); err != nil {
+		return fmt.Errorf("finalize command failed: %w", err)
+	}
+
+	// Wait for device to process all frames
+	totalDelay := time.Duration(len(g.Image)) * 100 * time.Millisecond
+	if d.debug {
+		fmt.Printf("[BLE] Waiting %v for device to process %d frames...\n", totalDelay, len(g.Image))
+	}
+	time.Sleep(totalDelay)
+
+	if d.debug {
+		fmt.Println("[BLE] ✓ Chunked protocol send complete!")
+	}
+
+	return nil
+}
+
 // Disconnect closes the connection to the device
 func (d *Device) Disconnect() error {
 	if !d.isConnected {

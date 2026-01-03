@@ -1,3 +1,4 @@
 .env
 xyaoled-daemon
 *.log
+*.txt

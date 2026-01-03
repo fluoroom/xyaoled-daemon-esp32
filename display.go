@@ -421,6 +421,68 @@ func (d *Display) ShowAnimatedGifNoReinit(base64Data string, loopInfinite bool) 
 	return nil
 }
 
+// ShowAnimatedGifChunked displays an animated GIF using the 88ff chunked protocol.
+// This method supports unlimited frames by chunking data transfer instead of
+// sending everything in one large write. Based on vendor app bluetooth dump analysis.
+func (d *Display) ShowAnimatedGifChunked(base64Data string) error {
+	// Ensure connected
+	if err := d.ensureConnected(); err != nil {
+		return fmt.Errorf("failed to connect to device: %w", err)
+	}
+
+	// Decode base64
+	imgData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	// Decode GIF
+	gifImg, err := gif.DecodeAll(bytes.NewReader(imgData))
+	if err != nil {
+		return fmt.Errorf("failed to decode GIF: %w", err)
+	}
+
+	frameCount := len(gifImg.Image)
+	if d.debugBLE {
+		log.Printf("[Display] Decoded animated GIF for chunked send: %d frames", frameCount)
+	}
+
+	// Process GIF (resize, rotate if needed)
+	processedGif, err := d.processAnimatedGifWithLoop(gifImg, true)
+	if err != nil {
+		return fmt.Errorf("failed to process animated GIF: %w", err)
+	}
+
+	// Stop any running animation/refresh loops
+	d.animationSeq++
+
+	// Store last content for reconnection
+	d.lastGifData = processedGif
+	d.lastGifIsAnim = true
+
+	// Send using chunked 88ff protocol
+	log.Printf("[Display] Sending animated GIF via chunked 88ff protocol (frames=%d, bytes=%d)", frameCount, len(processedGif))
+	d.sendMutex.Lock()
+	sendErr := d.device.SendGifWithChunkedProtocol(processedGif, frameCount)
+	d.sendMutex.Unlock()
+	
+	if sendErr != nil {
+		msg := sendErr.Error()
+		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") {
+			log.Printf("Error displaying animated GIF (chunked): %v", sendErr)
+			if !d.reconnecting {
+				go d.attemptReconnection()
+			}
+		}
+		return fmt.Errorf("failed to send chunked animated GIF: %w", sendErr)
+	}
+
+	log.Printf("✓ Sent animated GIF via chunked protocol (frames=%d, bytes=%d)", frameCount, len(processedGif))
+
+	d.firstSendDone = true
+	return nil
+}
+
 // processImage resizes image to display dimensions and converts to optimized GIF
 func (d *Display) processImage(img image.Image) ([]byte, error) {
 	// Resize to display dimensions first
