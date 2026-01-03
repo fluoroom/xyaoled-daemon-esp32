@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"xyaoled-daemon/xyaoled"
 )
 
 // ImageRequest represents the request body for image display
@@ -100,43 +98,40 @@ func isAnimatedPayload(base64Data string) (bool, error) {
 }
 
 func (h *Handler) displayImage(base64Data string, isAnimated bool, reinit bool) error {
-	buf, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return fmt.Errorf("failed to decode base64: %w", err)
-	}
+	var err error
 
 	if isAnimated {
 		if reinit {
-			err = h.display.experimentalSendAnimated(buf, xyaoled.SendOptions{ForceReinit: true})
+			err = h.display.ShowAnimatedGif(base64Data)
 		} else {
-			err = h.display.experimentalSendAnimatedNoReinit(buf, true)
+			err = h.display.ShowAnimatedGifNoReinit(base64Data, true)
 		}
 		if err != nil {
 			return err
 		}
-		log.Printf("✓ Sent animated GIF to screen (reinit=%v, bytes=%d)", reinit, len(buf))
 		h.sendCounter++
 		if h.config.ResetInterval > 0 && h.sendCounter%h.config.ResetInterval == 0 {
 			log.Printf("Performing periodic reset after %d image sends", h.sendCounter)
-			h.display.experimentalDisconnect()
-			h.display.experimentalConnect()
+			// Trigger reconnection workflow instead of experimental disconnect/connect
+			go h.display.attemptReconnection()
 		}
 		return nil
 	}
+
+	// Static image
 	if reinit {
-		err = h.display.experimentalSendStatic(buf, xyaoled.SendOptions{ForceReinit: true, StaticHeader: true})
+		err = h.display.ShowImage(base64Data)
 	} else {
-		err = h.display.experimentalSendStaticNoReinit(buf, true)
+		err = h.display.ShowImageNoReinit(base64Data)
 	}
 	if err != nil {
 		return err
 	}
-	log.Printf("✓ Sent static image to screen (reinit=%v, bytes=%d)", reinit, len(buf))
 	h.sendCounter++
 	if h.config.ResetInterval > 0 && h.sendCounter%h.config.ResetInterval == 0 {
 		log.Printf("Performing periodic reset after %d image sends", h.sendCounter)
-		h.display.experimentalDisconnect()
-		h.display.experimentalConnect()
+		// Trigger reconnection workflow instead of experimental disconnect/connect
+		go h.display.attemptReconnection()
 	}
 	return nil
 }
@@ -244,7 +239,6 @@ document.getElementById('testForm').onsubmit=async(e)=>{
 
 	cmd := r.FormValue("command")
 	brightnessRaw := r.FormValue("brightness")
-	loopInfinite := r.FormValue("loop_infinite") != ""
 
 	var (
 		animated, static, other []byte
@@ -270,38 +264,49 @@ document.getElementById('testForm').onsubmit=async(e)=>{
 	var runErr error
 	switch cmd {
 	case "connect":
-		runErr = h.display.experimentalConnect()
+		runErr = h.display.ensureConnected()
 	case "send_animated_reinit":
 		if runErr = requirePayload(animated, "animated"); runErr == nil {
-			runErr = h.display.experimentalSendAnimated(animated, xyaoled.SendOptions{ForceReinit: true})
+			runErr = h.display.ShowAnimatedGif(base64.StdEncoding.EncodeToString(animated))
 		}
 	case "send_animated_no_reinit":
 		if runErr = requirePayload(animated, "animated"); runErr == nil {
-			runErr = h.display.experimentalSendAnimatedNoReinit(animated, loopInfinite)
+			runErr = h.display.ShowAnimatedGifNoReinit(base64.StdEncoding.EncodeToString(animated), false)
 		}
 	case "send_static_reinit":
 		if runErr = requirePayload(static, "static"); runErr == nil {
-			runErr = h.display.experimentalSendStatic(static, xyaoled.SendOptions{ForceReinit: true, StaticHeader: true})
+			runErr = h.display.ShowImage(base64.StdEncoding.EncodeToString(static))
 		}
 	case "send_playlist":
-		runErr = h.display.experimentalSendPlaylist(animated, static)
+		if runErr = requirePayload(animated, "animated"); runErr == nil {
+			runErr = h.display.ShowAnimatedGif(base64.StdEncoding.EncodeToString(animated))
+		}
+		if runErr == nil && len(static) > 0 {
+			runErr = h.display.ShowImage(base64.StdEncoding.EncodeToString(static))
+		}
 	case "send_static_no_reinit":
 		if runErr = requirePayload(static, "static"); runErr == nil {
-			runErr = h.display.experimentalSendStaticNoReinit(static, true)
+			runErr = h.display.ShowImageNoReinit(base64.StdEncoding.EncodeToString(static))
 		}
 	case "send_other_static_no_reinit":
 		if runErr = requirePayload(other, "other"); runErr == nil {
-			runErr = h.display.experimentalSendStaticNoReinit(other, true)
+			runErr = h.display.ShowImageNoReinit(base64.StdEncoding.EncodeToString(other))
 		}
 	case "brightness_cycle":
 		steps := parseBrightnessSteps(brightnessRaw)
-		runErr = h.display.experimentalBrightnessCycle(steps, 200*time.Millisecond)
+		for _, step := range steps {
+			if err := h.display.device.SetBrightness(step); err != nil {
+				runErr = err
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
 	case "screen_off":
-		runErr = h.display.experimentalScreenOff()
+		runErr = h.display.device.SetBrightness(5)
 	case "screen_on":
-		runErr = h.display.experimentalScreenOn()
+		runErr = h.display.device.SetBrightness(80)
 	case "disconnect":
-		runErr = h.display.experimentalDisconnect()
+		h.display.Close()
 	default:
 		http.Error(w, "Unknown command", http.StatusBadRequest)
 		return

@@ -36,6 +36,17 @@ const (
 	gifSizeThreshold = 300
 	burstPaceBytes   = 1024
 	burstPause       = 12 * time.Millisecond
+
+	// 88ff Chunked Protocol Constants
+	// Based on analysis of lonelygifsmall.txt bluetooth dump
+	protocol88ffHeader = 0x88ff      // Extended data transfer protocol
+	protocol99aaHeader = 0x99aa      // Standard command protocol
+	dataChunkSize      = 20          // Bytes per 88ff data chunk
+	cmdSubInit         = 0x0f        // Initialize/connection setup
+	cmdSubFrameHeader  = 0x1f        // Frame header with metadata
+	cmdSubFrameControl = 0x11        // Frame control/transition
+	cmdSubFinalize     = 0x0d        // Finalize/end marker
+	chunkDelay88ff     = 2 * time.Millisecond // Delay between 88ff chunks
 )
 
 // ChunkLimits controls whether the sender obeys ATT-sized chunking, pacing and

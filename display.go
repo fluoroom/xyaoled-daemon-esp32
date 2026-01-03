@@ -161,79 +161,15 @@ func (d *Display) loadAndDisplayDefaultGif() error {
 	return nil
 }
 
-// ShowImage displays a single image (base64 encoded)
+// ShowImage displays a single image (base64 encoded) WITH reinit
 func (d *Display) ShowImage(base64Data string) error {
-	// Decode base64
-	imgData, err := base64.StdEncoding.DecodeString(base64Data)
-	if err != nil {
-		return fmt.Errorf("failed to decode base64: %w", err)
-	}
-
-	// Detect image type and decode
-	img, format, err := image.Decode(bytes.NewReader(imgData))
-	if err != nil {
-		return fmt.Errorf("failed to decode image: %w", err)
-	}
-
-	if d.debugBLE {
-		log.Printf("[Display] Decoded %s image: %dx%d", format, img.Bounds().Dx(), img.Bounds().Dy())
-	}
-
-	isFirstSend := !d.firstSendDone
-	// Clear previous content unless globally skipping, but allow one-time clear on first send when skipping.
-	if !d.config.SkipClear || isFirstSend {
-		if err := d.sendBlackFrame(); err != nil {
-			log.Printf("Warning: failed to clear panel before static image: %v", err)
-		}
-	}
-
-	// Resize and convert to single-frame animated GIF to reuse animated send path
-	gifData, err := d.processStaticAsAnimated(img)
-	if err != nil {
-		return fmt.Errorf("failed to process image: %w", err)
-	}
-
-	// Store last content for reconnection
-	d.lastGifData = gifData
-	d.lastGifIsAnim = false
-
-	// Stop any running animation/refresh loops
-	d.animationSeq++
-
-	// Send via animated path (even single-frame). Keep force reinit to reset playlists/state.
-	forceReinit := true
-	skipClear := d.config.SkipClear && !isFirstSend
-	opts := d.sendOpts(forceReinit, false, skipClear)
-	// Match captured log header and slot (0x05) for static sends.
-	logSlot := uint8(0x05)
-	opts.LogHeader = true
-	opts.SlotOverride = &logSlot
-	d.sendMutex.Lock()
-	sendErr := d.device.SendGifWithOptions(gifData, opts)
-	d.sendMutex.Unlock()
-	if sendErr != nil {
-		msg := sendErr.Error()
-		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue") {
-			log.Printf("Error displaying image (reinit): %v", sendErr)
-			if !d.reconnecting {
-				go d.attemptReconnection()
-			}
-		}
-		return fmt.Errorf("failed to send static image: %w", sendErr)
-	}
-
-	log.Printf("✓ Sent static image to screen (forceReinit=%v, skipClear=%v, staticHeader=%v, bytes=%d)", opts.ForceReinit, opts.SkipClear, opts.StaticHeader, len(gifData))
-
-	// Mark first successful send after connection
-	d.firstSendDone = true
-
-	return nil
+	return d.showImageInternal(base64Data, true)
 }
 
 // ShowImageNoReinit displays a single image without reinit/clear, using the log-compatible header/slot.
 func (d *Display) ShowImageNoReinit(base64Data string) error {
-	// Ensure connected (reuse experimental connect helper)
-	if err := d.experimentalConnect(); err != nil {
+	// Ensure connected
+	if err := d.ensureConnected(); err != nil {
 		return fmt.Errorf("failed to connect to device: %w", err)
 	}
 
@@ -291,8 +227,81 @@ func (d *Display) ShowImageNoReinit(base64Data string) error {
 	return nil
 }
 
-// ShowAnimatedGif displays an animated GIF (base64 encoded)
+// showImageInternal is the internal implementation that handles reinit parameter
+func (d *Display) showImageInternal(base64Data string, forceReinit bool) error {
+	// Decode base64
+	imgData, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return fmt.Errorf("failed to decode base64: %w", err)
+	}
+
+	// Detect image type and decode
+	img, format, err := image.Decode(bytes.NewReader(imgData))
+	if err != nil {
+		return fmt.Errorf("failed to decode image: %w", err)
+	}
+
+	if d.debugBLE {
+		log.Printf("[Display] Decoded %s image: %dx%d", format, img.Bounds().Dx(), img.Bounds().Dy())
+	}
+
+	isFirstSend := !d.firstSendDone
+	// Clear previous content unless globally skipping, but allow one-time clear on first send when skipping.
+	if !d.config.SkipClear || isFirstSend {
+		if err := d.sendBlackFrame(); err != nil {
+			log.Printf("Warning: failed to clear panel before static image: %v", err)
+		}
+	}
+
+	// Resize and convert to single-frame animated GIF to reuse animated send path
+	gifData, err := d.processStaticAsAnimated(img)
+	if err != nil {
+		return fmt.Errorf("failed to process image: %w", err)
+	}
+
+	// Store last content for reconnection
+	d.lastGifData = gifData
+	d.lastGifIsAnim = false
+
+	// Stop any running animation/refresh loops
+	d.animationSeq++
+
+	// Send via animated path (even single-frame). Use the forceReinit parameter
+	skipClear := d.config.SkipClear && !isFirstSend
+	opts := d.sendOpts(forceReinit, false, skipClear)
+	// Match captured log header and slot (0x05) for static sends.
+	logSlot := uint8(0x05)
+	opts.LogHeader = true
+	opts.SlotOverride = &logSlot
+	d.sendMutex.Lock()
+	sendErr := d.device.SendGifWithOptions(gifData, opts)
+	d.sendMutex.Unlock()
+	if sendErr != nil {
+		msg := sendErr.Error()
+		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue") {
+			log.Printf("Error displaying image (reinit): %v", sendErr)
+			if !d.reconnecting {
+				go d.attemptReconnection()
+			}
+		}
+		return fmt.Errorf("failed to send static image: %w", sendErr)
+	}
+
+	log.Printf("✓ Sent static image to screen (forceReinit=%v, skipClear=%v, staticHeader=%v, bytes=%d)", opts.ForceReinit, opts.SkipClear, opts.StaticHeader, len(gifData))
+
+	// Mark first successful send after connection
+	d.firstSendDone = true
+
+	return nil
+}
+
+// ShowAnimatedGif displays an animated GIF (base64 encoded) WITH reinit
 func (d *Display) ShowAnimatedGif(base64Data string) error {
+	return d.showAnimatedGifInternal(base64Data, true)
+}
+
+// showAnimatedGifInternal is the internal implementation that handles reinit parameter
+func (d *Display) showAnimatedGifInternal(base64Data string, forceReinit bool) error {
 	// Decode base64
 	imgData, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
@@ -330,8 +339,7 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 	d.lastGifData = processedGif
 	d.lastGifIsAnim = true
 
-	// Send once with optional init/clear rules; LoopCount was forced to 0 in processing
-	forceReinit := isFirstSend
+	// Send once with optional init/clear rules using the parameter; LoopCount was forced to 0 in processing
 	skipClear := d.config.SkipClear && !isFirstSend
 	opts := d.sendOpts(forceReinit, false, skipClear)
 	log.Printf("[Display] Sending animated GIF (forceReinit=%v, skipClear=%v, staticHeader=%v)", opts.ForceReinit, opts.SkipClear, opts.StaticHeader)
@@ -360,7 +368,7 @@ func (d *Display) ShowAnimatedGif(base64Data string) error {
 // ShowAnimatedGifNoReinit displays an animated GIF without reinit/clear (infinite loop by default).
 func (d *Display) ShowAnimatedGifNoReinit(base64Data string, loopInfinite bool) error {
 	// Ensure connected
-	if err := d.experimentalConnect(); err != nil {
+	if err := d.ensureConnected(); err != nil {
 		return fmt.Errorf("failed to connect to device: %w", err)
 	}
 
@@ -826,6 +834,31 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// ensureConnected establishes a connection if currently disconnected.
+// This is used by NoReinit methods that need a connection but shouldn't
+// force a full reconnect workflow.
+func (d *Display) ensureConnected() error {
+	if d.device != nil && d.device.IsConnected() {
+		return nil
+	}
+
+	device, err := xyaoled.NewDevice(d.debugBLE)
+	if err != nil {
+		return err
+	}
+	if err := device.Connect(30 * time.Second); err != nil {
+		return err
+	}
+	// Replace device and reset state
+	d.device = device
+	d.firstSendDone = false
+	d.lastGifData = nil
+	d.lastGifIsAnim = false
+	// Set a reasonable brightness baseline
+	_ = d.device.SetBrightness(80)
+	return nil
 }
 
 // Close disconnects from the LED panel
