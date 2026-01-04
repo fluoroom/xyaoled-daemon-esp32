@@ -430,6 +430,15 @@ func (d *Display) ShowAnimatedGifChunked(base64Data string) error {
 		return fmt.Errorf("failed to connect to device: %w", err)
 	}
 
+	// Enable BLE logging for debugging
+	logFile := fmt.Sprintf("ble_chunked_%d.log", time.Now().Unix())
+	if err := d.device.EnableBLELogging(logFile); err != nil {
+		log.Printf("Warning: failed to enable BLE logging: %v", err)
+	} else {
+		log.Printf("BLE traffic logging to: %s", logFile)
+		defer d.device.DisableBLELogging()
+	}
+
 	// Decode base64
 	imgData, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
@@ -447,8 +456,8 @@ func (d *Display) ShowAnimatedGifChunked(base64Data string) error {
 		log.Printf("[Display] Decoded animated GIF for chunked send: %d frames", frameCount)
 	}
 
-	// Process GIF (resize, rotate if needed)
-	processedGif, err := d.processAnimatedGifWithLoop(gifImg, true)
+	// Process frames (resize, rotate if needed) - returns processed *gif.GIF
+	processedGif, err := d.processAnimatedGifForChunked(gifImg)
 	if err != nil {
 		return fmt.Errorf("failed to process animated GIF: %w", err)
 	}
@@ -456,16 +465,20 @@ func (d *Display) ShowAnimatedGifChunked(base64Data string) error {
 	// Stop any running animation/refresh loops
 	d.animationSeq++
 
-	// Store last content for reconnection
-	d.lastGifData = processedGif
+	// Store last content for reconnection (encode for storage)
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, processedGif); err != nil {
+		return fmt.Errorf("failed to encode GIF for storage: %w", err)
+	}
+	d.lastGifData = buf.Bytes()
 	d.lastGifIsAnim = true
 
 	// Send using chunked 88ff protocol
-	log.Printf("[Display] Sending animated GIF via chunked 88ff protocol (frames=%d, bytes=%d)", frameCount, len(processedGif))
+	log.Printf("[Display] Sending animated GIF via chunked 88ff protocol (frames=%d)", frameCount)
 	d.sendMutex.Lock()
-	sendErr := d.device.SendGifWithChunkedProtocol(processedGif, frameCount)
+	sendErr := d.device.SendGifWithChunkedProtocol(processedGif)
 	d.sendMutex.Unlock()
-	
+
 	if sendErr != nil {
 		msg := sendErr.Error()
 		if strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") {
@@ -477,7 +490,8 @@ func (d *Display) ShowAnimatedGifChunked(base64Data string) error {
 		return fmt.Errorf("failed to send chunked animated GIF: %w", sendErr)
 	}
 
-	log.Printf("✓ Sent animated GIF via chunked protocol (frames=%d, bytes=%d)", frameCount, len(processedGif))
+	log.Printf("✓ Sent animated GIF via chunked protocol: %d frames", frameCount)
+	log.Printf("✓ BLE traffic log saved to: %s", logFile)
 
 	d.firstSendDone = true
 	return nil
@@ -568,6 +582,83 @@ func (d *Display) processStaticAsAnimated(img image.Image) ([]byte, error) {
 // processAnimatedGif resizes all frames, applies optional rotation, and re-encodes preserving delays/looping (infinite by default)
 func (d *Display) processAnimatedGif(src *gif.GIF) ([]byte, error) {
 	return d.processAnimatedGifWithLoop(src, true)
+}
+
+// processAnimatedGifForChunked processes GIF frames (resize, rotate) and returns
+// the processed *gif.GIF for direct frame access in chunked protocol.
+// Does NOT encode to bytes - returns the struct directly.
+func (d *Display) processAnimatedGifForChunked(src *gif.GIF) (*gif.GIF, error) {
+	var out gif.GIF
+	out.LoopCount = 0 // infinite loop
+
+	// Fallback delay derived from configured frameDelay (centiseconds)
+	fallbackDelay := 5 // Fallback delay (centiseconds) for frames with zero delay; use a small sane default (50ms)
+
+	for i, frame := range src.Image {
+		// Convert paletted frame to RGBA and flatten over opaque black to avoid transparency bleed
+		bounds := frame.Bounds()
+		rgba := image.NewRGBA(bounds)
+		for i := 0; i < len(rgba.Pix); i += 4 {
+			rgba.Pix[i] = 0
+			rgba.Pix[i+1] = 0
+			rgba.Pix[i+2] = 0
+			rgba.Pix[i+3] = 255
+		}
+		draw.Draw(rgba, bounds, frame, bounds.Min, draw.Over)
+
+		processed := d.resizeImage(rgba, d.width, d.height)
+		if d.config.UpsideDown {
+			processed = rotate180(processed)
+		}
+
+		// Keep as RGBA for chunked protocol (we need direct pixel access)
+		// Convert to RGBA if not already
+		prgba, ok := processed.(*image.RGBA)
+		if !ok {
+			tmp := image.NewRGBA(processed.Bounds())
+			draw.Draw(tmp, processed.Bounds(), processed, processed.Bounds().Min, draw.Src)
+			prgba = tmp
+		}
+
+		// For chunked protocol, we want RGBA frames, not paletted
+		// But gif.GIF struct needs paletted images
+		// Build palette up to 256 colors
+		colorMap := make(map[color.RGBA]bool)
+		pix := prgba.Pix
+		stride := prgba.Stride
+		rect := prgba.Rect
+		for y := rect.Min.Y; y < rect.Max.Y && len(colorMap) < 256; y++ {
+			for x := rect.Min.X; x < rect.Max.X && len(colorMap) < 256; x++ {
+				i := (y-rect.Min.Y)*stride + (x-rect.Min.X)*4
+				col := color.RGBA{R: pix[i], G: pix[i+1], B: pix[i+2], A: pix[i+3]}
+				colorMap[col] = true
+			}
+		}
+
+		palette := make(color.Palette, 0, len(colorMap))
+		for col := range colorMap {
+			palette = append(palette, col)
+			if len(palette) >= 256 {
+				break
+			}
+		}
+		if len(palette) == 0 {
+			palette = append(palette, color.RGBA{0, 0, 0, 255})
+		}
+
+		paletted := image.NewPaletted(processed.Bounds(), palette)
+		draw.FloydSteinberg.Draw(paletted, processed.Bounds(), processed, image.Point{})
+
+		out.Image = append(out.Image, paletted)
+		out.Disposal = append(out.Disposal, gif.DisposalBackground)
+		delay := src.Delay[i]
+		if delay == 0 {
+			delay = fallbackDelay
+		}
+		out.Delay = append(out.Delay, delay)
+	}
+
+	return &out, nil
 }
 
 // processAnimatedGifWithLoop allows choosing infinite (loop count 0) or single-loop (1) behavior.

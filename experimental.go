@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"image/gif"
 	"io"
@@ -191,8 +192,9 @@ restoreFormState();
 <li>Chunked writes with handle 0x0082</li>
 <li>Multiple sequential writes for large payloads</li>
 <li>Specific timing patterns between chunks</li>
+<li><strong>Vendor app ALWAYS sends reset/clear before starting</strong></li>
 </ul>
-<p><strong>Key Question:</strong> Does the proprietary app send the complete GIF or use a different encoding/compression?</p>
+<p><strong>Key Discovery:</strong> The proprietary app uses two protocols - <code>99aa</code> for commands and <code>88ff</code> for data chunks!</p>
 </div>
 
 <div class="section">
@@ -316,25 +318,43 @@ button:hover { background: #45a049; }
 
 	case "send":
 		// Actually send to device
-		processed, err := h.processGifForMode(gifData, mode)
-		if err != nil {
-			response.WriteString(fmt.Sprintf(`<div class="result error"><p>❌ Processing failed: %v</p></div>`, err))
-		} else {
-			opts := xyaoled.SendOptions{
-				ForceReinit: reinit,
-			}
-
-			err = h.display.device.SendGifWithOptions(processed, opts)
+		if mode == "chunked-88ff" {
+			// Use new chunked protocol directly
+			err := h.display.ShowAnimatedGifChunked(base64.StdEncoding.EncodeToString(gifData))
 			if err != nil {
-				response.WriteString(fmt.Sprintf(`<div class="result error"><p>❌ Send failed: %v</p></div>`, err))
+				response.WriteString(fmt.Sprintf(`<div class="result error"><p>❌ Chunked send failed: %v</p></div>`, err))
 			} else {
 				response.WriteString(fmt.Sprintf(`
+<div class="result success">
+<h2>✅ Successfully Sent via Chunked 88ff Protocol!</h2>
+<p>Mode: %s | Frames: %d</p>
+<p><strong>Check the device - all frames should be displaying!</strong></p>
+<p>This protocol supports 18+ frames by chunking data transfer.</p>
+</div>
+`, mode, analysis.FrameCount))
+			}
+		} else {
+			// Use legacy modes
+			processed, err := h.processGifForMode(gifData, mode)
+			if err != nil {
+				response.WriteString(fmt.Sprintf(`<div class="result error"><p>❌ Processing failed: %v</p></div>`, err))
+			} else {
+				opts := xyaoled.SendOptions{
+					ForceReinit: reinit,
+				}
+
+				err = h.display.device.SendGifWithOptions(processed, opts)
+				if err != nil {
+					response.WriteString(fmt.Sprintf(`<div class="result error"><p>❌ Send failed: %v</p></div>`, err))
+				} else {
+					response.WriteString(fmt.Sprintf(`
 <div class="result success">
 <h2>✅ Successfully Sent to Device</h2>
 <p>Mode: %s | Reinit: %v | Size: %d bytes</p>
 <p>Check the device to see how many frames are displayed!</p>
 </div>
 `, mode, reinit, len(processed)))
+				}
 			}
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"image/gif"
+	"os"
 	"strings"
 	"time"
 
@@ -39,14 +40,14 @@ const (
 
 	// 88ff Chunked Protocol Constants
 	// Based on analysis of lonelygifsmall.txt bluetooth dump
-	protocol88ffHeader = 0x88ff      // Extended data transfer protocol
-	protocol99aaHeader = 0x99aa      // Standard command protocol
-	dataChunkSize      = 20          // Bytes per 88ff data chunk
-	cmdSubInit         = 0x0f        // Initialize/connection setup
-	cmdSubFrameHeader  = 0x1f        // Frame header with metadata
-	cmdSubFrameControl = 0x11        // Frame control/transition
-	cmdSubFinalize     = 0x0d        // Finalize/end marker
-	chunkDelay88ff     = 2 * time.Millisecond // Delay between 88ff chunks
+	protocol88ffHeader = 0x88ff               // Extended data transfer protocol
+	protocol99aaHeader = 0x99aa               // Standard command protocol
+	dataChunkSize      = 20                   // Bytes per 88ff data chunk
+	cmdSubInit         = 0x0f                 // Initialize/connection setup
+	cmdSubFrameHeader  = 0x1f                 // Frame header with metadata
+	cmdSubFrameControl = 0x11                 // Frame control/transition
+	cmdSubFinalize     = 0x0d                 // Finalize/end marker
+	chunkDelay88ff     = 3 * time.Millisecond // Delay between 88ff chunks (with flow control)
 )
 
 // ChunkLimits controls whether the sender obeys ATT-sized chunking, pacing and
@@ -77,6 +78,8 @@ type Device struct {
 	slot          uint8
 	isBusy        bool
 	debug         bool
+	logFile       *os.File    // BLE dump log file for debugging
+	notifyChan    chan []byte // Channel for receiving notifications
 }
 
 // SendOptions controls how GIF payloads are written to the device.
@@ -122,7 +125,62 @@ func NewDevice(debug bool) (*Device, error) {
 		isConnected:   false,
 		isBusy:        false,
 		debug:         debug,
+		logFile:       nil,
+		notifyChan:    make(chan []byte, 10), // Buffered channel for notifications
 	}, nil
+}
+
+// EnableBLELogging creates a log file to capture all BLE traffic
+func (d *Device) EnableBLELogging(filename string) error {
+	if d.logFile != nil {
+		d.logFile.Close()
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("failed to create BLE log file: %w", err)
+	}
+
+	d.logFile = f
+	d.logToFile("=== BLE Traffic Log Started ===")
+	d.logToFile(fmt.Sprintf("Timestamp: %s", time.Now().Format(time.RFC3339)))
+	d.logToFile("=" + strings.Repeat("=", 50))
+	return nil
+}
+
+// DisableBLELogging closes the log file
+func (d *Device) DisableBLELogging() {
+	if d.logFile != nil {
+		d.logToFile("=== BLE Traffic Log Ended ===")
+		d.logFile.Close()
+		d.logFile = nil
+	}
+}
+
+// logToFile writes a line to the BLE log file
+func (d *Device) logToFile(msg string) {
+	if d.logFile != nil {
+		fmt.Fprintf(d.logFile, "%s\n", msg)
+		d.logFile.Sync() // Flush immediately
+	}
+}
+
+// logBytesToFile logs bytes in hex format
+func (d *Device) logBytesToFile(direction, description string, data []byte) {
+	if d.logFile == nil {
+		return
+	}
+
+	hexStr := make([]string, len(data))
+	for i, b := range data {
+		hexStr[i] = fmt.Sprintf("%02x", b)
+	}
+
+	d.logToFile(fmt.Sprintf("[%s] %s (%d bytes): %s",
+		time.Now().Format("15:04:05.000"),
+		description,
+		len(data),
+		strings.Join(hexStr, " ")))
 }
 
 // Connect scans for and connects to an XYAOLED device
@@ -284,8 +342,18 @@ func (d *Device) Connect(timeout time.Duration) error {
 			fmt.Println("[BLE] Enabling notifications on ae02...")
 		}
 		d.notifyChar.EnableNotifications(func(buf []byte) {
+			// Log to file if enabled
+			d.logBytesToFile("RX", "notification", buf)
+
 			if d.debug {
 				fmt.Printf("[BLE] <-- Notification received: %d bytes: %x\n", len(buf), buf)
+			}
+
+			// Send to channel for flow control (non-blocking)
+			select {
+			case d.notifyChan <- buf:
+			default:
+				// Channel full, skip (we only care about recent notifications)
 			}
 		})
 		if d.debug {
@@ -473,6 +541,9 @@ func (d *Device) send(data []byte) error {
 	if !d.isConnected {
 		return errors.New("device not connected")
 	}
+
+	// Log to file if enabled
+	d.logBytesToFile("TX", "send", data)
 
 	if d.debug {
 		fmt.Printf("[BLE] --> Sending %d bytes: %x\n", len(data), data)
@@ -894,6 +965,9 @@ func (d *Device) Send88ffChunk(frameId, chunkId byte, data []byte) error {
 	packet = append(packet, frameId, chunkId)
 	packet = append(packet, data...)
 
+	// Log to file if enabled
+	d.logBytesToFile("TX", fmt.Sprintf("88ff chunk (frame=%d chunk=%d)", frameId, chunkId), packet)
+
 	if d.debug {
 		fmt.Printf("[BLE] Sending 88ff chunk: frame=%d chunk=%d size=%d\n", frameId, chunkId, len(data))
 	}
@@ -903,8 +977,42 @@ func (d *Device) Send88ffChunk(frameId, chunkId byte, data []byte) error {
 		return fmt.Errorf("failed to write 88ff chunk: %w", err)
 	}
 
-	// Small delay between chunks to avoid overwhelming device
-	time.Sleep(chunkDelay88ff)
+	// Wait for notification after every 5 chunks for flow control
+	if chunkId%5 == 4 { // Wait after chunks 4, 9, 14, 19, etc.
+		select {
+		case <-d.notifyChan:
+			// Got ACK, continue
+		case <-time.After(100 * time.Millisecond):
+			// Timeout - continue anyway
+		}
+	}
+
+	// ALWAYS drain ALL pending notifications aggressively to prevent channel overflow
+	// Device sends notifications very fast - must drain continuously
+	drained := 0
+	for {
+		select {
+		case <-d.notifyChan:
+			drained++
+		default:
+			// No more pending notifications
+			goto done_draining
+		}
+	}
+done_draining:
+	// Only log if we drained a significant amount
+	if drained > 10 && d.debug {
+		fmt.Printf("[BLE] Drained %d pending notifications at chunk %d\n", drained, chunkId)
+	}
+
+	// Adaptive delay: slow down significantly for last chunks where device buffer is full
+	delay := chunkDelay88ff
+	if chunkId > 200 {
+		delay = 15 * time.Millisecond // Much slower for last ~30 chunks
+	} else if chunkId > 180 {
+		delay = 10 * time.Millisecond // Slower for chunks 180-200
+	}
+	time.Sleep(delay)
 	return nil
 }
 
@@ -916,13 +1024,26 @@ func (d *Device) SendFrameCommand(subcmd byte, params []byte) error {
 		return errors.New("device not connected")
 	}
 
-	// Build 99aa protocol packet: [0x99, 0xaa, length_low, length_high, 0xff, 0x88, subcmd, ...params]
-	payloadLen := 4 + len(params) // ff88 + subcmd + params
-	packet := make([]byte, 0, 4+payloadLen)
-	packet = append(packet, 0x99, 0xaa)
-	packet = append(packet, byte(payloadLen&0xff), byte((payloadLen>>8)&0xff)) // Little-endian length
+	// Build 99aa protocol packet: [0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, subcmd, ...params]
+	// Uses fixed "00 2e" prefix (not a length field) - same format as legacy protocol
+	packet := make([]byte, 0, 6+1+len(params))
+	packet = append(packet, 0x99, 0xaa, 0x00, 0x2e) // Fixed header
 	packet = append(packet, 0xff, 0x88, subcmd)
 	packet = append(packet, params...)
+
+	// Log to file if enabled
+	cmdName := "unknown"
+	switch subcmd {
+	case cmdSubInit:
+		cmdName = "init"
+	case cmdSubFrameHeader:
+		cmdName = "frame_header"
+	case cmdSubFrameControl:
+		cmdName = "frame_control"
+	case cmdSubFinalize:
+		cmdName = "finalize"
+	}
+	d.logBytesToFile("TX", fmt.Sprintf("99aa %s (0x%02x)", cmdName, subcmd), packet)
 
 	if d.debug {
 		fmt.Printf("[BLE] Sending 99aa command: subcmd=0x%02x params_len=%d\n", subcmd, len(params))
@@ -958,36 +1079,47 @@ func chunkData(data []byte, chunkSize int) [][]byte {
 // This allows sending GIFs with 18+ frames by chunking the data transfer.
 //
 // Protocol sequence per frame:
-//  1. Send 99aa init command (first frame only)
+//  0. Send reset/clear command (stop any current playback)
+//  1. Send 99aa init command
 //  2. Send 99aa frame header with timing/display params
 //  3. Send frame pixel data in 20-byte chunks via 88ff
 //  4. Send 99aa frame control command
 //  5. Repeat for each frame
 //  6. Send 99aa finalize command
-func (d *Device) SendGifWithChunkedProtocol(gifData []byte, frameCount int) error {
+func (d *Device) SendGifWithChunkedProtocol(g *gif.GIF) error {
 	if !d.isConnected {
 		return errors.New("device not connected")
 	}
 
+	frameCount := len(g.Image)
 	if d.debug {
-		fmt.Printf("[BLE] Starting chunked protocol send: %d bytes, %d frames\n", len(gifData), frameCount)
+		fmt.Printf("[BLE] Starting chunked protocol send: %d frames\n", frameCount)
 	}
 
+	// Step 0: Clear/reset any current playback (DISABLED - may cause disconnect)
+	// The device seems to disconnect if we send this, so skip it for now
+	/*
+		if d.debug {
+			fmt.Println("[BLE] Sending reset/clear command...")
+		}
+		if err := d.send(clearPlaybackSequence()); err != nil {
+			// Best effort - continue even if clear fails
+			if d.debug {
+				fmt.Printf("[BLE] Warning: clear command failed: %v\n", err)
+			}
+		}
+		time.Sleep(commandDelay)
+	*/
+
 	// Step 1: Send initialization command (0x0f)
-	// Format observed: 0f 00 0a 00 01 00 00 00 00
-	initParams := []byte{0x00, 0x0a, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}
+	// Format observed: 0f 00 0a 00 03 00 00 00 00 (from lonelygif.txt)
+	initParams := []byte{0x00, 0x0a, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00}
 	if err := d.SendFrameCommand(cmdSubInit, initParams); err != nil {
 		return fmt.Errorf("init command failed: %w", err)
 	}
 
-	// Parse GIF to extract individual frames
-	g, err := gif.DecodeAll(bytes.NewReader(gifData))
-	if err != nil {
-		return fmt.Errorf("failed to decode GIF: %w", err)
-	}
-
 	if d.debug {
-		fmt.Printf("[BLE] Decoded GIF: %d frames\n", len(g.Image))
+		fmt.Printf("[BLE] Processing %d frames\n", len(g.Image))
 	}
 
 	// Step 2-5: Process each frame
@@ -996,22 +1128,16 @@ func (d *Device) SendGifWithChunkedProtocol(gifData []byte, frameCount int) erro
 			fmt.Printf("[BLE] Processing frame %d/%d\n", frameIdx+1, len(g.Image))
 		}
 
-		// Get frame delay (in centiseconds, convert to useful format)
-		delay := uint16(0x0100) // Default delay
-		if frameIdx < len(g.Delay) && g.Delay[frameIdx] > 0 {
-			delay = uint16(g.Delay[frameIdx])
-		}
-
 		// Send frame header command (0x1f)
-		// Format observed: 1f 00 00 00 02 00 1a 01 03 11 15 1c 06 01 00 09 20 71 86 8e bf 00 00 00 00
-		// This contains timing, dimensions, and display parameters
+		// Format observed from lonelygif.txt: 1f 00 00 00 01 00 1a 01 03 10 2c 3b 06 01 00 6a a9 68 be 26 81 00 00 00 00
+		// Using EXACT bytes from lonelygif.txt (delay bytes 6a a9 might be checksum/magic values)
 		frameHeaderParams := []byte{
 			0x00, 0x00, 0x00, byte(frameIdx + 1), // Frame sequence
-			0x00, 0x1a, 0x01, 0x03,               // Display parameters
-			0x11, 0x15, 0x1c, 0x06,               // More parameters
-			0x01, 0x00,                           // Flags
-			byte(delay & 0xff), byte((delay >> 8) & 0xff), // Delay
-			0x71, 0x86, 0x8e, 0xbf, // Additional params
+			0x00, 0x1a, 0x01, 0x03, // Display parameters
+			0x10, 0x2c, 0x3b, 0x06, // More parameters (from lonelygif.txt)
+			0x01, 0x00, // Flags
+			0x6a, 0xa9, // EXACT bytes from lonelygif (not computed delay!)
+			0x68, 0xbe, 0x26, 0x81, // Additional params (from lonelygif.txt)
 			0x00, 0x00, 0x00, 0x00, // Padding
 		}
 		if err := d.SendFrameCommand(cmdSubFrameHeader, frameHeaderParams); err != nil {
@@ -1020,20 +1146,51 @@ func (d *Device) SendGifWithChunkedProtocol(gifData []byte, frameCount int) erro
 
 		// Convert frame image to raw pixel data
 		bounds := img.Bounds()
-		frameData := make([]byte, 0, bounds.Dx()*bounds.Dy()*3) // RGB data
+		width := bounds.Dx()
+		height := bounds.Dy()
+		frameData := make([]byte, 0, width*height*3) // RGB data
+
+		if d.debug {
+			fmt.Printf("[BLE] Frame %d dimensions: %dx%d, expected %d bytes\n",
+				frameIdx, width, height, width*height*3)
+		}
+
 		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 			for x := bounds.Min.X; x < bounds.Max.X; x++ {
 				r, g, b, _ := img.At(x, y).RGBA()
+				// RGBA() returns 16-bit values, shift to 8-bit
 				frameData = append(frameData, byte(r>>8), byte(g>>8), byte(b>>8))
+			}
+		}
+
+		if d.debug {
+			fmt.Printf("[BLE] Frame %d: extracted %d bytes of pixel data\n", frameIdx, len(frameData))
+			// Show first few pixels for debugging
+			if len(frameData) >= 9 {
+				fmt.Printf("[BLE] First 3 pixels: R%dG%dB%d R%dG%dB%d R%dG%dB%d\n",
+					frameData[0], frameData[1], frameData[2],
+					frameData[3], frameData[4], frameData[5],
+					frameData[6], frameData[7], frameData[8])
 			}
 		}
 
 		// Send frame data in chunks via 88ff protocol
 		chunks := chunkData(frameData, dataChunkSize)
+		if d.debug {
+			fmt.Printf("[BLE] Frame %d: sending %d chunks of pixel data (%d bytes total)\n",
+				frameIdx, len(chunks), len(frameData))
+		}
 		for chunkIdx, chunk := range chunks {
+			// Note: chunkIdx will overflow byte at 256, but should be fine for typical frames
+			if chunkIdx > 255 {
+				return fmt.Errorf("frame %d has too many chunks (%d > 255), reduce image size", frameIdx, chunkIdx)
+			}
 			if err := d.Send88ffChunk(byte(frameIdx), byte(chunkIdx), chunk); err != nil {
 				return fmt.Errorf("frame %d chunk %d failed: %w", frameIdx, chunkIdx, err)
 			}
+		}
+		if d.debug {
+			fmt.Printf("[BLE] Frame %d: sent all %d chunks successfully\n", frameIdx, len(chunks))
 		}
 
 		// Send frame control command (0x11)
@@ -1048,18 +1205,40 @@ func (d *Device) SendGifWithChunkedProtocol(gifData []byte, frameCount int) erro
 	}
 
 	// Step 6: Send finalize command (0x0d)
-	// Format observed: 0d 00 04 02 04 ff 00
-	finalizeParams := []byte{0x00, 0x04, 0x02, 0x04, 0xff, 0x00}
+	// Format observed: 0d 00 04 03 04 ff 00 (vendor uses 03, not 02)
+	// The 0x03 byte might indicate playback mode or frame count marker
+	finalizeParams := []byte{0x00, 0x04, 0x03, 0x04, 0xff, 0x00}
+	if d.debug {
+		fmt.Println("[BLE] Sending finalize command...")
+	}
 	if err := d.SendFrameCommand(cmdSubFinalize, finalizeParams); err != nil {
 		return fmt.Errorf("finalize command failed: %w", err)
 	}
 
-	// Wait for device to process all frames
-	totalDelay := time.Duration(len(g.Image)) * 100 * time.Millisecond
+	// NOTE: Vendor app does NOT send 0x57 or any other command after finalize!
+	// The device automatically starts playback after receiving finalize.
+	// We just need to wait for the device to process and start displaying.
+
+	// Wait and drain notifications - device sends many after finalize
 	if d.debug {
-		fmt.Printf("[BLE] Waiting %v for device to process %d frames...\n", totalDelay, len(g.Image))
+		fmt.Printf("[BLE] Waiting for device to start playback and draining notifications...\n")
 	}
-	time.Sleep(totalDelay)
+
+	// Drain notifications for 10 seconds to let device process and display
+	drainStart := time.Now()
+	notificationCount := 0
+	for time.Since(drainStart) < 10*time.Second {
+		select {
+		case <-d.notifyChan:
+			notificationCount++
+		case <-time.After(100 * time.Millisecond):
+			// Check every 100ms if time is up
+		}
+	}
+
+	if d.debug {
+		fmt.Printf("[BLE] Drained %d notifications during 10 second wait\n", notificationCount)
+	}
 
 	if d.debug {
 		fmt.Println("[BLE] ✓ Chunked protocol send complete!")
