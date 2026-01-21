@@ -48,6 +48,10 @@ func (d *Display) sendOpts(forceReinit bool, staticHeader bool, skipClear bool) 
 
 // sendBlackFrame clears the panel with a black full-screen frame
 func (d *Display) sendBlackFrame() error {
+	// If the screen is off / dimmed to 5 or less, ignore clear/send requests.
+	if d.isScreenOff() {
+		return fmt.Errorf("screen is off (brightness <=5); ignoring sendBlackFrame")
+	}
 	img := image.NewRGBA(image.Rect(0, 0, d.width, d.height))
 	// fill opaque black
 	for i := 0; i < len(img.Pix); i += 4 {
@@ -173,6 +177,11 @@ func (d *Display) ShowImageNoReinit(base64Data string) error {
 		return fmt.Errorf("failed to connect to device: %w", err)
 	}
 
+	// Do not send images if the screen is off (brightness <= 5)
+	if d.isScreenOff() {
+		return fmt.Errorf("screen is off (brightness <=5); ignoring ShowImageNoReinit request")
+	}
+
 	imgData, err := base64.StdEncoding.DecodeString(base64Data)
 	if err != nil {
 		return fmt.Errorf("failed to decode base64: %w", err)
@@ -243,6 +252,11 @@ func (d *Display) showImageInternal(base64Data string, forceReinit bool) error {
 
 	if d.debugBLE {
 		log.Printf("[Display] Decoded %s image: %dx%d", format, img.Bounds().Dx(), img.Bounds().Dy())
+	}
+
+	// If the screen is off/very dim, ignore incoming image requests until brightness is raised.
+	if d.isScreenOff() {
+		return fmt.Errorf("screen is off (brightness <=5); ignoring image send request")
 	}
 
 	isFirstSend := !d.firstSendDone
@@ -318,6 +332,11 @@ func (d *Display) showAnimatedGifInternal(base64Data string, forceReinit bool) e
 		log.Printf("[Display] Decoded animated GIF: %d frames", len(gifImg.Image))
 	}
 
+	// If the screen is off/very dim, ignore incoming animation requests until brightness is raised.
+	if d.isScreenOff() {
+		return fmt.Errorf("screen is off (brightness <=5); ignoring animated GIF send request")
+	}
+
 	isFirstSend := !d.firstSendDone
 	// Clear previous content unless globally skipping, but allow one-time clear on first send when skipping.
 	if !d.config.SkipClear || isFirstSend {
@@ -370,6 +389,11 @@ func (d *Display) ShowAnimatedGifNoReinit(base64Data string, loopInfinite bool) 
 	// Ensure connected
 	if err := d.ensureConnected(); err != nil {
 		return fmt.Errorf("failed to connect to device: %w", err)
+	}
+
+	// Do not send images if the screen is off (brightness <= 5)
+	if d.isScreenOff() {
+		return fmt.Errorf("screen is off (brightness <=5); ignoring ShowAnimatedGifNoReinit request")
 	}
 
 	imgData, err := base64.StdEncoding.DecodeString(base64Data)
@@ -428,6 +452,11 @@ func (d *Display) ShowAnimatedGifChunked(base64Data string) error {
 	// Ensure connected
 	if err := d.ensureConnected(); err != nil {
 		return fmt.Errorf("failed to connect to device: %w", err)
+	}
+
+	// If the screen is off/very dim, ignore chunked animation requests until brightness is raised.
+	if d.isScreenOff() {
+		return fmt.Errorf("screen is off (brightness <=5); ignoring chunked animated GIF send request")
 	}
 
 	// Enable BLE logging for debugging
@@ -987,6 +1016,17 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// isScreenOff returns true when the device brightness is considered "off".
+// We treat brightness <= 5 as the screen-off/dimmed state and avoid sending
+// images while in that state.
+func (d *Display) isScreenOff() bool {
+	if d == nil || d.device == nil {
+		return false
+	}
+	// device.GetBrightness returns uint8; treat 0-5 as off
+	return d.device.GetBrightness() <= 5
 }
 
 // ensureConnected establishes a connection if currently disconnected.
