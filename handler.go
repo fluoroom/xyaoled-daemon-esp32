@@ -295,16 +295,16 @@ document.getElementById('testForm').onsubmit=async(e)=>{
 	case "brightness_cycle":
 		steps := parseBrightnessSteps(brightnessRaw)
 		for _, step := range steps {
-			if err := h.display.SetBrightness(step); err != nil {
+			if err := h.display.SetBrightnessIfNotManualOff(step); err != nil {
 				runErr = err
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
 	case "screen_off":
-		runErr = h.display.SetBrightness(5)
+		runErr = h.display.TurnOff()
 	case "screen_on":
-		runErr = h.display.SetBrightness(80)
+		runErr = h.display.TurnOn(80)
 	case "disconnect":
 		h.display.Close()
 	default:
@@ -536,7 +536,7 @@ func (h *Handler) HandleOff(w http.ResponseWriter, r *http.Request) {
 		h.lastOnBrightness = cur
 		h.display.prevBrightness = cur
 	}
-	if err := h.display.SetBrightness(5); err != nil {
+	if err := h.display.TurnOff(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -562,7 +562,7 @@ func (h *Handler) HandleOn(w http.ResponseWriter, r *http.Request) {
 		target = 125
 	}
 	h.display.prevBrightness = target
-	if err := h.display.SetBrightness(target); err != nil {
+	if err := h.display.TurnOn(target); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -595,8 +595,9 @@ func (h *Handler) HandleBrightness(w http.ResponseWriter, r *http.Request) {
 	level := uint8(val)
 	h.lastOnBrightness = level
 	h.display.prevBrightness = level
-	if err := h.display.SetBrightness(level); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Use SetBrightnessIfNotManualOff to respect manual off state
+	if err := h.display.SetBrightnessIfNotManualOff(level); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	w.WriteHeader(http.StatusOK)

@@ -38,6 +38,7 @@ type Display struct {
 	firstSendDone  bool       // Track first send after connection
 	prevBrightness uint8      // Remember last non-dim brightness for screen on/off experiments
 	currentBright  uint8      // Track current brightness at Display level (more reliable than device level)
+	isManualOff    bool       // Track if user explicitly turned screen off via /off endpoint
 }
 
 func (d *Display) sendOpts(forceReinit bool, staticHeader bool, skipClear bool) xyaoled.SendOptions {
@@ -100,6 +101,7 @@ func NewDisplay(cfg *Config) (*Display, error) {
 		firstSendDone:  false,
 		prevBrightness: 125,
 		currentBright:  125, // Initialize to default
+		isManualOff:    false,
 	}
 
 	// Try to load saved brightness
@@ -1089,6 +1091,30 @@ func (d *Display) SetBrightness(level uint8) error {
 		log.Printf("Warning: failed to persist brightness: %v", err)
 	}
 	return nil
+}
+
+// SetBrightnessIfNotManualOff sets brightness only if screen is not manually off.
+// Returns error if screen was manually turned off via /off endpoint.
+func (d *Display) SetBrightnessIfNotManualOff(level uint8) error {
+	if d.isManualOff {
+		return fmt.Errorf("screen is manually off; ignoring brightness change (use /on to enable)")
+	}
+	return d.SetBrightness(level)
+}
+
+// TurnOff sets brightness to 5 and marks screen as manually off
+func (d *Display) TurnOff() error {
+	if err := d.SetBrightness(5); err != nil {
+		return err
+	}
+	d.isManualOff = true
+	return nil
+}
+
+// TurnOn restores brightness and clears manual off flag
+func (d *Display) TurnOn(level uint8) error {
+	d.isManualOff = false // Clear flag before setting brightness
+	return d.SetBrightness(level)
 }
 
 // ensureConnected establishes a connection if currently disconnected.
