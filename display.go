@@ -941,11 +941,10 @@ func (d *Display) connectionMonitor() {
 			continue
 		}
 
-		// Perform a lightweight ping to detect silent disconnects. If ping
-		// fails, trigger reconnection. This helps catch cases where the
-		// underlying BLE stack lost the link but the wrapper still thinks
-		// it's connected.
-		if d.device != nil {
+		// Perform a lightweight ping to detect silent disconnects, but ONLY
+		// if screen is not off (brightness >5). Ping sends BLE commands which
+		// would wake the screen.
+		if d.device != nil && !d.isScreenOff() {
 			if err := d.device.Ping(); err != nil {
 				log.Printf("⚠ Connection ping failed: %v. Attempting to reconnect...", err)
 				go d.attemptReconnection()
@@ -1008,10 +1007,12 @@ func (d *Display) attemptReconnection() {
 		d.firstSendDone = false
 		log.Println("✓ Successfully reconnected to XYAOLED LED panel!")
 
-		// Restore brightness from saved file
+		// Restore brightness from saved file. The reconnection process itself
+		// already woke the screen (BLE handshake), so we must restore the saved
+		// brightness to maintain the correct state (especially if it was <=5 "off").
 		savedBrightness := d.loadBrightness()
 		if savedBrightness == 0 {
-			// No saved brightness, use reasonable default
+			// No saved brightness, default to reasonable value
 			savedBrightness = 80
 		}
 		if err := device.SetBrightness(savedBrightness); err != nil {
