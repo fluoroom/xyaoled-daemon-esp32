@@ -37,6 +37,7 @@ type Display struct {
 	sendMutex      sync.Mutex // Prevent concurrent sends to device
 	firstSendDone  bool       // Track first send after connection
 	prevBrightness uint8      // Remember last non-dim brightness for screen on/off experiments
+	currentBright  uint8      // Track current brightness at Display level (more reliable than device level)
 }
 
 func (d *Display) sendOpts(forceReinit bool, staticHeader bool, skipClear bool) xyaoled.SendOptions {
@@ -98,6 +99,7 @@ func NewDisplay(cfg *Config) (*Display, error) {
 		reconnecting:   false,
 		firstSendDone:  false,
 		prevBrightness: 125,
+		currentBright:  125, // Initialize to default
 	}
 
 	// Try to load saved brightness
@@ -111,9 +113,8 @@ func NewDisplay(cfg *Config) (*Display, error) {
 		log.Printf("Warning: failed to set initial brightness: %v", err)
 	} else {
 		display.prevBrightness = savedBrightness
-	}
-
-	// Start connection monitor
+		display.currentBright = savedBrightness // Track at Display level
+	} // Start connection monitor
 	go display.connectionMonitor()
 
 	return display, nil
@@ -1018,6 +1019,7 @@ func (d *Display) attemptReconnection() {
 		if err := device.SetBrightness(savedBrightness); err != nil {
 			log.Printf("Warning: failed to restore brightness: %v", err)
 		} else {
+			d.currentBright = savedBrightness // Track at Display level
 			log.Printf("Restored brightness to %d after reconnect", savedBrightness)
 		}
 
@@ -1040,11 +1042,11 @@ func minDuration(a, b time.Duration) time.Duration {
 // We treat brightness <= 5 as the screen-off/dimmed state and avoid sending
 // images while in that state.
 func (d *Display) isScreenOff() bool {
-	if d == nil || d.device == nil {
+	if d == nil {
 		return false
 	}
-	// device.GetBrightness returns uint8; treat 0-5 as off
-	return d.device.GetBrightness() <= 5
+	// Use Display-level tracking which is more reliable
+	return d.currentBright <= 5
 }
 
 // saveBrightness persists the current brightness to a file in the project folder
@@ -1080,6 +1082,8 @@ func (d *Display) SetBrightness(level uint8) error {
 	if err := d.device.SetBrightness(level); err != nil {
 		return err
 	}
+	// Track at Display level for reliable isScreenOff() checks
+	d.currentBright = level
 	// Save to file for persistence across restarts
 	if err := d.saveBrightness(level); err != nil {
 		log.Printf("Warning: failed to persist brightness: %v", err)
