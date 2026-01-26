@@ -11,6 +11,8 @@ import (
 	"image/png"
 	"log"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,24 +85,32 @@ func NewDisplay(cfg *Config) (*Display, error) {
 
 	log.Println("✓ Successfully connected to XYAOLED LED panel!")
 
-	// Set initial brightness to 125%
-	if err := device.SetBrightness(125); err != nil {
-		log.Printf("Warning: failed to set initial brightness: %v", err)
-	}
-
-	frameDelay := time.Duration(1) * time.Second
-
+	// Load saved brightness or use default 125
+	savedBrightness := uint8(125)
 	display := &Display{
 		device:         device,
 		width:          cfg.DisplayWidth,
 		height:         cfg.DisplayHeight,
-		frameDelay:     frameDelay,
+		frameDelay:     time.Duration(1) * time.Second,
 		lastUpdate:     time.Now(),
 		debugBLE:       cfg.DebugBLE,
 		config:         cfg,
 		reconnecting:   false,
 		firstSendDone:  false,
 		prevBrightness: 125,
+	}
+
+	// Try to load saved brightness
+	if loaded := display.loadBrightness(); loaded > 0 {
+		savedBrightness = loaded
+		log.Printf("Restored brightness from file: %d", savedBrightness)
+	}
+
+	// Set initial brightness (from file or default)
+	if err := device.SetBrightness(savedBrightness); err != nil {
+		log.Printf("Warning: failed to set initial brightness: %v", err)
+	} else {
+		display.prevBrightness = savedBrightness
 	}
 
 	// Start connection monitor
@@ -998,9 +1008,16 @@ func (d *Display) attemptReconnection() {
 		d.firstSendDone = false
 		log.Println("✓ Successfully reconnected to XYAOLED LED panel!")
 
-		// Set a reasonable brightness baseline (best-effort)
-		if err := device.SetBrightness(80); err != nil {
-			log.Printf("Warning: failed to set brightness: %v", err)
+		// Restore brightness from saved file
+		savedBrightness := d.loadBrightness()
+		if savedBrightness == 0 {
+			// No saved brightness, use reasonable default
+			savedBrightness = 80
+		}
+		if err := device.SetBrightness(savedBrightness); err != nil {
+			log.Printf("Warning: failed to restore brightness: %v", err)
+		} else {
+			log.Printf("Restored brightness to %d after reconnect", savedBrightness)
 		}
 
 		// NOTE: by design we do NOT attempt to reload or resend any images here.
@@ -1027,6 +1044,46 @@ func (d *Display) isScreenOff() bool {
 	}
 	// device.GetBrightness returns uint8; treat 0-5 as off
 	return d.device.GetBrightness() <= 5
+}
+
+// saveBrightness persists the current brightness to a file in the project folder
+func (d *Display) saveBrightness(level uint8) error {
+	brightnessFile := filepath.Join(".", ".brightness")
+	data := []byte(strconv.Itoa(int(level)))
+	if err := os.WriteFile(brightnessFile, data, 0644); err != nil {
+		return fmt.Errorf("failed to save brightness: %w", err)
+	}
+	return nil
+}
+
+// loadBrightness reads the saved brightness from file, returns 0 if not found/error
+func (d *Display) loadBrightness() uint8 {
+	brightnessFile := filepath.Join(".", ".brightness")
+	data, err := os.ReadFile(brightnessFile)
+	if err != nil {
+		// File might not exist on first run
+		return 0
+	}
+	val, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || val < 0 || val > 255 {
+		return 0
+	}
+	return uint8(val)
+}
+
+// SetBrightness sets brightness on the device and persists it to disk
+func (d *Display) SetBrightness(level uint8) error {
+	if d.device == nil {
+		return fmt.Errorf("device not ready")
+	}
+	if err := d.device.SetBrightness(level); err != nil {
+		return err
+	}
+	// Save to file for persistence across restarts
+	if err := d.saveBrightness(level); err != nil {
+		log.Printf("Warning: failed to persist brightness: %v", err)
+	}
+	return nil
 }
 
 // ensureConnected establishes a connection if currently disconnected.
