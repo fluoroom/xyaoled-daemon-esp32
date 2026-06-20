@@ -6,8 +6,7 @@ xyaoled-daemon
 .gitignore
 
 # Environment files
-.env
-.env.example
+
 
 # Documentation
 README.md
