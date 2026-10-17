@@ -21,18 +21,37 @@ import (
 )
 
 const (
-	maxPacketSize     = 10000
-	firstHeaderSize   = 24
-	nextHeaderSize    = 16
-	packetTypeFirst   = 0x07
-	packetTypeMiddle  = 0x08
-	packetTypeLast    = 0x09
-	ackStatusMinOK    = 0x14
-	maxPacketResends  = 3
-	commandAckTimeout = time.Second
+	maxPacketSize    = 10000
+	firstHeaderSize  = 24
+	nextHeaderSize   = 16
+	packetTypeFirst  = 0x07
+	packetTypeMiddle = 0x08
+	packetTypeLast   = 0x09
+	ackStatusMinOK   = 0x14
+	maxPacketResends = 3
+
+	// After an upload the panel is busy for a while (tens of seconds after a
+	// large GIF) and ignores the program select; it is re-sent until accepted.
+	selectRetryInterval = time.Second
+	panelBusyTimeout    = 60 * time.Second
+
+	// uploadAppliedTimeout bounds the wait for 88ff05 after an upload.
+	uploadAppliedTimeout = 5 * time.Second
 )
 
-var errNoAck = errors.New("no ack from device")
+var (
+	errNoAck = errors.New("no ack from device")
+	// errNotReady means the panel answered data with 88ff05: it is not in
+	// receive mode, so the upload must restart from the program select.
+	errNotReady = errors.New("panel is not accepting data")
+	// ErrPanelBusy means the panel never accepted the program select.
+	ErrPanelBusy = errors.New("panel busy: program select not acknowledged")
+)
+
+// isNotReady reports whether b is an 88ff05 notification.
+func isNotReady(b []byte) bool {
+	return len(b) >= 3 && b[0] == 0x88 && b[1] == 0xff && b[2] == 0x05
+}
 
 // ack is a parsed 88ff03 transfer acknowledgement.
 type ack struct {
@@ -48,9 +67,10 @@ func parseAck(b []byte) (ack, bool) {
 	return ack{index: uint16(b[3]) | uint16(b[4])<<8, ctr: b[5], status: b[8]}, true
 }
 
-// buildUploadPackets splits payload into acknowledged packets. trailer is the
-// 8 header bytes that follow the packet count in the first packet.
-func buildUploadPackets(payload []byte, seq, slot byte, trailer [8]byte) [][]byte {
+// buildUploadPackets splits payload into acknowledged packets for program
+// with command sequence number seq. trailer is the 8 header bytes that follow
+// the packet count in the first packet.
+func buildUploadPackets(payload []byte, program, seq byte, trailer [8]byte) [][]byte {
 	firstCap := maxPacketSize - firstHeaderSize
 	nextCap := maxPacketSize - nextHeaderSize
 	n := 1
@@ -80,7 +100,7 @@ func buildUploadPackets(payload []byte, seq, slot byte, trailer [8]byte) [][]byt
 		p := make([]byte, 0, total)
 		p = append(p, 0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88)
 		p = append(p, byte(total), byte(total>>8))
-		p = append(p, typ, seq, slot)
+		p = append(p, typ, program, seq)
 		p = append(p, byte(remaining), byte(remaining>>8), byte(remaining>>16))
 		if i == 0 {
 			count := n + 1
@@ -133,13 +153,18 @@ func (d *Device) drainNotifications() {
 	}
 }
 
-// waitAck waits for the next 88ff03 notification, ignoring repeats of the
-// last counter value like the vendor app does.
-func (d *Device) waitAck(timeout time.Duration) (ack, error) {
+// waitAck waits for the ack with index want (0 acks the program select, n acks
+// packet n). Duplicates and acks for other indices, such as late acks for the
+// program select, are skipped. While waiting for a packet ack, an 88ff05
+// notification returns errNotReady.
+func (d *Device) waitAck(want uint16, timeout time.Duration) (ack, error) {
 	deadline := time.After(timeout)
 	for {
 		select {
 		case buf := <-d.notifyChan:
+			if want > 0 && isNotReady(buf) {
+				return ack{}, errNotReady
+			}
 			a, ok := parseAck(buf)
 			if !ok {
 				continue
@@ -148,6 +173,9 @@ func (d *Device) waitAck(timeout time.Duration) (ack, error) {
 				continue
 			}
 			d.lastAckCtr, d.haveLastAckCtr = a.ctr, true
+			if a.index != want {
+				continue
+			}
 			return a, nil
 		case <-deadline:
 			return ack{}, errNoAck
@@ -155,17 +183,50 @@ func (d *Device) waitAck(timeout time.Duration) (ack, error) {
 	}
 }
 
-// sendCommand writes a short command and waits briefly for its ack. Missing
-// acks are not fatal: not every command is acknowledged.
-func (d *Device) sendCommand(cmd []byte) error {
-	d.drainNotifications()
-	if err := d.writePacket(cmd); err != nil {
-		return err
+// waitUploadApplied waits for the 88ff05 notification the panel sends once it
+// has taken in a finished upload. Commands sent before it arrives (such as
+// the reinit handshake) can be rejected, after which the panel disconnects.
+func (d *Device) waitUploadApplied() {
+	start := time.Now()
+	deadline := time.After(uploadAppliedTimeout)
+	for {
+		select {
+		case buf := <-d.notifyChan:
+			if isNotReady(buf) {
+				if d.debug {
+					fmt.Printf("[BLE] Upload applied after %v\n", time.Since(start).Round(time.Millisecond))
+				}
+				return
+			}
+		case <-deadline:
+			if d.debug {
+				fmt.Printf("[BLE] No upload-applied notification after %v\n", uploadAppliedTimeout)
+			}
+			return
+		}
 	}
-	if _, err := d.waitAck(commandAckTimeout); err != nil && d.debug {
-		fmt.Printf("[BLE] No ack for command %x (continuing)\n", cmd)
+}
+
+// selectProgram sends the program select command until the panel acks it,
+// returning ErrPanelBusy if it never does within panelBusyTimeout.
+func (d *Device) selectProgram(program, seq byte) error {
+	cmd := []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0d, 0x00, 0x04, program, seq, 0xff, 0x00}
+	start := time.Now()
+	for {
+		d.drainNotifications()
+		if err := d.writePacket(cmd); err != nil {
+			return err
+		}
+		if _, err := d.waitAck(0, selectRetryInterval); err == nil {
+			return nil
+		}
+		if time.Since(start) > panelBusyTimeout {
+			return ErrPanelBusy
+		}
+		if d.debug {
+			fmt.Printf("[BLE] Panel busy (%v), re-sending program select\n", time.Since(start).Round(time.Second))
+		}
 	}
-	return nil
 }
 
 // uploadPackets sends packets one at a time, waiting for the device to ack
@@ -183,19 +244,16 @@ func (d *Device) uploadPackets(packets [][]byte) error {
 			if err = d.writePacket(p); err != nil {
 				return fmt.Errorf("failed to write packet %d/%d: %w", i+1, len(packets), err)
 			}
-			a, err = d.waitAck(ackTimeout(len(p)))
-			if err == nil {
+			a, err = d.waitAck(want, ackTimeout(len(p)))
+			if err != errNoAck {
 				break
 			}
 		}
 		if err != nil {
-			return fmt.Errorf("packet %d/%d: %w after %d resends", i+1, len(packets), err, maxPacketResends)
+			return fmt.Errorf("packet %d/%d: %w", i+1, len(packets), err)
 		}
 		if a.status < ackStatusMinOK {
 			return fmt.Errorf("device rejected packet %d/%d (status 0x%02x)", i+1, len(packets), a.status)
-		}
-		if a.index != want && d.debug {
-			fmt.Printf("[BLE] Ack index %d for packet %d (continuing)\n", a.index, want)
 		}
 	}
 	return nil

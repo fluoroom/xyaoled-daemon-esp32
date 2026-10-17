@@ -19,19 +19,27 @@ const (
 	notifyCharUUID = "ae02"
 
 	// Protocol constants
-	defaultSlot   = 0x07
-	maxBrightness = 125
-	minBrightness = 0
+	// defaultProgram is the program (playlist position) uploads replace.
+	defaultProgram = 0x02
+	maxBrightness  = 125
+	minBrightness  = 0
 
 	// Timing constants
 	initDelay    = 300 * time.Millisecond
 	commandDelay = 30 * time.Millisecond
 )
 
-// clearPlaybackSequence returns a command that stops/clears current playback
-// Reuses the initialization stop command observed to reset playback state.
-func clearPlaybackSequence() []byte {
-	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0f, 0x00, 0x0a, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00}
+// clearPlaybackSequence returns the command that stops current playback.
+func clearPlaybackSequence(seq byte) []byte {
+	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0f, 0x00, 0x0a, 0x00, seq, 0x00, 0x00, 0x00, 0x00}
+}
+
+// nextSeq returns the next command sequence number. Every command carries
+// its own number, as the vendor app does.
+func (d *Device) nextSeq() byte {
+	seq := d.seqNum
+	d.seqNum++
+	return seq
 }
 
 // Device represents a connection to an XYAOLED display
@@ -43,7 +51,7 @@ type Device struct {
 	isConnected   bool
 	seqNum        uint8
 	currentBright uint8
-	slot          uint8
+	program       uint8
 	debug         bool
 	notifyChan    chan []byte // Channel for receiving notifications
 
@@ -56,11 +64,12 @@ type Device struct {
 
 // SendOptions controls how GIF payloads are written to the device.
 // ForceReinit reruns the connection handshake before the upload; LogHeader
-// selects the header used for static images; SlotOverride picks the slot.
+// selects the header used for static images; Program overrides the program
+// (playlist position) the upload replaces.
 type SendOptions struct {
-	ForceReinit  bool
-	LogHeader    bool
-	SlotOverride *uint8
+	ForceReinit bool
+	LogHeader   bool
+	Program     *uint8
 }
 
 // NewDevice creates a new XYAOLED device instance
@@ -87,7 +96,7 @@ func NewDevice(debug bool) (*Device, error) {
 		adapter:       adapter,
 		seqNum:        1,
 		currentBright: 100,
-		slot:          defaultSlot,
+		program:       defaultProgram,
 		isConnected:   false,
 		debug:         debug,
 		notifyChan:    make(chan []byte, 64), // Buffered channel for notifications
@@ -415,7 +424,7 @@ func (d *Device) SetBrightness(level uint8) error {
 	thirdByte := uint8(float32(level) * 0.8)
 
 	if d.debug {
-		fmt.Printf("[BLE] Setting brightness: level=%d, thirdByte=%d, seq=%d\n", level, thirdByte, d.seqNum)
+		fmt.Printf("[BLE] Setting brightness: level=%d, thirdByte=%d\n", level, thirdByte)
 	}
 
 	// Build brightness command with sequence number
@@ -423,13 +432,11 @@ func (d *Device) SetBrightness(level uint8) error {
 		0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88,
 		0x10, 0x00,
 		0x12, 0x00,
-		d.seqNum,
+		d.nextSeq(),
 		level,
 		thirdByte,
 		0x00, 0x00, 0x00,
 	}
-
-	d.seqNum++
 
 	err := d.send(cmd)
 	if err == nil && d.debug {
@@ -475,7 +482,7 @@ func (d *Device) SendGifWithOptions(gifBuffer []byte, opts SendOptions) error {
 		// failed, or a DBus/WriteValue signature issue, do not retry the image
 		// upload — return immediately so callers get the real error and can
 		// decide what to do (we'll trigger reconnect elsewhere).
-		if err.Error() == "device not connected" {
+		if err.Error() == "device not connected" || errors.Is(err, ErrPanelBusy) {
 			return err
 		}
 		if strings.Contains(err.Error(), "failed to reinitialize") || strings.Contains(err.Error(), "Not connected") || strings.Contains(err.Error(), "WriteValue") {
@@ -522,35 +529,44 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 	if d.debug {
 		fmt.Println("[BLE] Clearing previous playback state...")
 	}
-	if err := d.sendCommand(clearPlaybackSequence()); err != nil && d.debug {
+	// The panel never acks this command, so don't wait for one.
+	d.drainNotifications()
+	if err := d.writePacket(clearPlaybackSequence(d.nextSeq())); err != nil && d.debug {
 		fmt.Printf("[BLE] Clear playback failed (continuing): %v\n", err)
 	}
 
-	slot := d.slot
-	if opts.SlotOverride != nil {
-		slot = *opts.SlotOverride
+	program := d.program
+	if opts.Program != nil {
+		program = *opts.Program
 	}
-	seq := d.seqNum
-	d.seqNum++
-	if d.debug {
-		fmt.Printf("[BLE] Selecting slot 0x%02x (seq %d)...\n", slot, seq)
-	}
-	selectSlot := []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0d, 0x00, 0x04, seq, slot, 0xff, 0x00}
-	if err := d.sendCommand(selectSlot); err != nil {
-		return fmt.Errorf("failed to select slot: %w", err)
-	}
+	seq := d.nextSeq()
+	packets := buildUploadPackets(gifBuffer, program, seq, firstPacketTrailer(opts))
 
-	packets := buildUploadPackets(gifBuffer, seq, slot, firstPacketTrailer(opts))
-	if d.debug {
-		fmt.Printf("[BLE] Uploading %d bytes in %d packet(s), %d-byte writes\n", len(gifBuffer), len(packets), d.attPayloadSize())
-	}
-	if err := d.uploadPackets(packets); err != nil {
-		return err
+	// A panel that answers data with 88ff05 has dropped out of receive mode:
+	// select the program again and restart the upload.
+	for attempt := 1; ; attempt++ {
+		if d.debug {
+			fmt.Printf("[BLE] Selecting program %d (seq %d)...\n", program, seq)
+		}
+		if err := d.selectProgram(program, seq); err != nil {
+			return fmt.Errorf("failed to select program: %w", err)
+		}
+		if d.debug {
+			fmt.Printf("[BLE] Uploading %d bytes in %d packet(s), %d-byte writes\n", len(gifBuffer), len(packets), d.attPayloadSize())
+		}
+		err := d.uploadPackets(packets)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errNotReady) || attempt == maxPacketResends {
+			return err
+		}
 	}
 
 	if d.debug {
 		fmt.Println("[BLE] ✓ GIF sent and acknowledged")
 	}
+	d.waitUploadApplied()
 	return nil
 }
 

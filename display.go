@@ -21,9 +21,6 @@ import (
 
 const brightnessFile = ".brightness"
 
-// staticSlot is the slot static images are uploaded to.
-const staticSlot = 0x05
-
 // Display handles the LED panel display logic
 type Display struct {
 	device        *xyaoled.Device
@@ -91,8 +88,7 @@ func (d *Display) ShowImage(data []byte) error {
 		return fmt.Errorf("failed to process image: %w", err)
 	}
 
-	slot := uint8(staticSlot)
-	opts := xyaoled.SendOptions{ForceReinit: true, LogHeader: true, SlotOverride: &slot}
+	opts := xyaoled.SendOptions{LogHeader: true}
 	if err := d.send(gifData, opts); err != nil {
 		return fmt.Errorf("failed to send static image: %w", err)
 	}
@@ -115,15 +111,15 @@ func (d *Display) ShowAnimatedGif(data []byte) error {
 		return fmt.Errorf("failed to process animated GIF: %w", err)
 	}
 
-	if err := d.send(gifData, xyaoled.SendOptions{ForceReinit: true}); err != nil {
+	if err := d.send(gifData, xyaoled.SendOptions{}); err != nil {
 		return fmt.Errorf("failed to send animated GIF: %w", err)
 	}
 	log.Printf("✓ Sent animated GIF to screen (frames=%d, bytes=%d)", len(src.Image), len(gifData))
 	return nil
 }
 
-// send clears the panel with a black frame and uploads gifData. Images are
-// ignored while the screen is off (brightness <= 5).
+// send uploads gifData. Images are ignored while the screen is off
+// (brightness <= 5).
 func (d *Display) send(gifData []byte, opts xyaoled.SendOptions) error {
 	if d.isScreenOff() {
 		return fmt.Errorf("screen is off (brightness <=5); ignoring image send request")
@@ -131,12 +127,6 @@ func (d *Display) send(gifData []byte, opts xyaoled.SendOptions) error {
 
 	d.sendMutex.Lock()
 	defer d.sendMutex.Unlock()
-
-	if black, err := d.imageToGif(d.blackFrame()); err == nil {
-		if err := d.device.SendGif(black); err != nil {
-			log.Printf("Warning: failed to clear panel: %v", err)
-		}
-	}
 
 	err := d.device.SendGifWithOptions(gifData, opts)
 	if err != nil && isConnectionError(err) && !d.reconnecting {
@@ -149,13 +139,6 @@ func (d *Display) send(gifData []byte, opts xyaoled.SendOptions) error {
 func isConnectionError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "Not connected") || strings.Contains(msg, "device not connected") || strings.Contains(msg, "WriteValue")
-}
-
-// blackFrame returns an opaque black image the size of the panel.
-func (d *Display) blackFrame() *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, d.width, d.height))
-	fillBlack(img)
-	return img
 }
 
 func fillBlack(img *image.RGBA) {
