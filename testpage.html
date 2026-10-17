@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XYAOLED Test Page</title>
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--accent:#1f6feb;--ok:#1a7f37;--err:#cf222e}
+@media (prefers-color-scheme:dark){:root{--bg:#111;--card:#1b1b1b;--fg:#e6e6e6;--muted:#999;--line:#333;--accent:#4c8dff;--ok:#3fb950;--err:#ff6b6b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 10px}
+label{display:block;font-weight:600;font-size:13px;margin:10px 0 4px}
+input[type=file]{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+input[type=range]{width:100%}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+button{padding:9px 14px;border:0;border-radius:6px;background:var(--accent);color:#fff;font-size:14px;cursor:pointer}
+button.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{opacity:.5;cursor:wait}
+#bval{font-variant-numeric:tabular-nums;min-width:3ch}
+#log{font:12px/1.5 ui-monospace,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+#log .ok{color:var(--ok)}#log .err{color:var(--err)}
+</style>
+</head>
+<body>
+<main>
+<h1>XYAOLED test page</h1>
+<p class="sub">Every send reinitialises the panel first. Results are logged at the bottom.</p>
+
+<section>
+<h2>Connection</h2>
+<div class="row">
+<button data-cmd="connect">Connect</button>
+<button data-cmd="disconnect" class="secondary">Disconnect</button>
+<button data-get="/reconnect" class="secondary">Reconnect</button>
+<button data-get="/health" class="secondary">Health</button>
+</div>
+</section>
+
+<section>
+<h2>Send</h2>
+<label for="anim">Animated GIF</label>
+<input type="file" id="anim" accept="image/gif">
+<div class="row"><button data-cmd="send_animated" data-file="anim" data-field="animated">Send animated</button></div>
+<label for="static">Static image</label>
+<input type="file" id="static" accept="image/*,.gif">
+<div class="row"><button data-cmd="send_static" data-file="static" data-field="static">Send static</button></div>
+</section>
+
+<section>
+<h2>Brightness</h2>
+<label for="bright">Level (5–125)</label>
+<div class="row" style="margin-top:0">
+<input type="range" id="bright" min="5" max="125" value="80">
+<span id="bval">80</span>
+</div>
+<div class="row">
+<button id="set-bright">Set brightness</button>
+<button data-get="/on" class="secondary">On</button>
+<button data-get="/off" class="secondary">Off</button>
+</div>
+</section>
+
+<section>
+<h2>Log</h2>
+<div id="log"></div>
+<div class="row"><button class="secondary" id="clear-log">Clear</button></div>
+</section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k){ try { return localStorage.getItem(k) } catch { return null } },
+  set(k,v){ try { localStorage.setItem(k,v) } catch {} }
+};
+
+function log(text, cls){
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = new Date().toLocaleTimeString() + '  ' + text;
+  $('log').prepend(d);
+}
+$('clear-log').onclick = () => $('log').replaceChildren();
+
+async function call(label, url, init){
+  document.querySelectorAll('button').forEach(b => b.disabled = true);
+  const t0 = performance.now();
+  try {
+    const res = await fetch(url, init);
+    const body = (await res.text()).trim(), ms = Math.round(performance.now() - t0);
+    log(`${label} → ${res.status} (${ms} ms)${body ? '  ' + body : ''}`, res.ok ? 'ok' : 'err');
+  } catch (e) {
+    log(`${label} → ${e.message}`, 'err');
+  } finally {
+    document.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
+}
+
+// Commands go through POST /uploadTest; files are attached when the button names one.
+document.querySelectorAll('button[data-cmd]').forEach(b => b.onclick = () => {
+  const form = new FormData();
+  form.append('command', b.dataset.cmd);
+  if (b.dataset.file) {
+    const file = $(b.dataset.file).files[0];
+    if (!file) { log(`${b.dataset.cmd} → choose a file first`, 'err'); return; }
+    form.append(b.dataset.field, file);
+  }
+  call(b.dataset.cmd, '/uploadTest', {method:'POST', body:form});
+});
+
+document.querySelectorAll('button[data-get]').forEach(b => b.onclick = () => call('GET ' + b.dataset.get, b.dataset.get));
+
+const bright = $('bright'), saved = store.get('xyao_bright');
+if (saved) bright.value = saved;
+$('bval').textContent = bright.value;
+bright.oninput = () => { $('bval').textContent = bright.value; store.set('xyao_bright', bright.value); };
+$('set-bright').onclick = () => call('brightness ' + bright.value, '/brightness/' + bright.value);
+</script>
+</body>
+</html>

@@ -48,9 +48,7 @@ ENV HTTP_PORT=11001 \
     LED_PANEL_MAC=AA:BB:CC:DD:EE:FF \
     LED_DISPLAY_WIDTH=96 \
     LED_DISPLAY_HEIGHT=16 \
-    LED_FPS=1 \
-    DEBUG_BLE=false \
-    VERBOSE_LOGGING=false
+    DEBUG_BLE=false
 
 # Run the daemon
 CMD ["./xyaoled-daemon"]

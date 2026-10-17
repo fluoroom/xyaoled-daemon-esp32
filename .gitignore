@@ -2,3 +2,4 @@
 xyaoled-daemon
 *.log
 *.txt
+.brightness

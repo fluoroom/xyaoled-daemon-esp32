@@ -56,11 +56,9 @@ All configuration is done via environment variables:
 - `LED_PANEL_MAC` - Bluetooth MAC address of your LED panel (required)
 - `LED_DISPLAY_WIDTH` - Display width in pixels (default: 96)
 - `LED_DISPLAY_HEIGHT` - Display height in pixels (default: 16)
-- `LED_FPS` - Frames per second for animations (default: 1)
 - `HTTP_PORT` - HTTP server port (default: 11001)
 - `HTTP_HOST` - HTTP server host (default: 0.0.0.0)
 - `DEBUG_BLE` - Enable Bluetooth debugging (default: false)
-- `VERBOSE_LOGGING` - Enable verbose logging (default: false)
 
 ### Bluetooth Access
 

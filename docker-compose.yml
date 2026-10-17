@@ -15,9 +15,7 @@ services:
       - LED_PANEL_MAC=${LED_PANEL_MAC:-AA:BB:CC:DD:EE:FF}
       - LED_DISPLAY_WIDTH=${LED_DISPLAY_WIDTH:-96}
       - LED_DISPLAY_HEIGHT=${LED_DISPLAY_HEIGHT:-16}
-      - LED_FRAME_INTERVAL_SECONDS=${LED_FRAME_INTERVAL_SECONDS:-1}
       - DEBUG_BLE=${DEBUG_BLE:-false}
-      - VERBOSE_LOGGING=${VERBOSE_LOGGING:-false}
       - UPSIDE_DOWN=${UPSIDE_DOWN:-false}
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/var/run/dbus/system_bus_socket
     # Required for Bluetooth access
