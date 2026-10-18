@@ -19,8 +19,16 @@ Every frame starts with `99 aa 00 2e ff 88` followed by the total frame length
 
 - Connect: five fixed init commands (`initialize` in `device.go`).
 - Brightness: `… 10 00 12 00 <seq> <level> <level*0.8> 00 00 00`, level 0–125.
-- Clear playback: `… 0f 00 0a 00 05 00 00 00 00`.
 - Select slot: `… 0d 00 04 <seq> <slot> ff 00`.
+- Power on/off (type `0x0011`): `… 0e 00 11 00 <seq> <01|02> 01 01`, `01`=on, `02`=off.
+- Clear screen + wipe playlist (type `0x0005`): `… 11 00 05 00 <seq> 01 01 00 00 00 00`.
+  Sent before every upload so it replaces the playlist instead of being
+  appended to it.
+
+The power and clear commands were identified from
+[samcgn/xyaoled-control](https://github.com/samcgn/xyaoled-control)'s
+`PROTOCOL.md`, an independent reverse-engineering of the same device family
+(not a fork — only these two command definitions were taken from it).
 
 ## Uploading a GIF
 
