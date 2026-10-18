@@ -147,6 +147,16 @@ func fillBlack(img *image.RGBA) {
 	}
 }
 
+// fillBlackRect fills the region of img within r with opaque black.
+func fillBlackRect(img *image.RGBA, r image.Rectangle) {
+	r = r.Intersect(img.Bounds())
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			img.SetRGBA(x, y, color.RGBA{0, 0, 0, 255})
+		}
+	}
+}
+
 // fitToPanel resizes img to the panel and rotates it when UPSIDE_DOWN is set.
 func (d *Display) fitToPanel(img image.Image) image.Image {
 	resized := d.resizeImage(img, d.width, d.height)
@@ -158,24 +168,79 @@ func (d *Display) fitToPanel(img image.Image) image.Image {
 
 // processAnimatedGif resizes all frames, applies optional rotation, and
 // re-encodes with infinite looping, preserving per-frame delays.
+//
+// Source GIFs may be "keyframed": each decoded frame only covers the
+// sub-rectangle that changed since the previous frame (per GIF disposal
+// rules), rather than the full picture. We composite frames onto a
+// full-canvas buffer, honoring each frame's disposal method, so every
+// frame we send to the device is a complete, flattened image.
+//
+// All frames are then quantized against one shared palette (encoded as a
+// single Global Color Table) rather than a palette per frame. Go's encoder
+// only reuses one color table across frames when every frame's Palette is
+// literally the same slice as GIF.Config.ColorModel; otherwise it emits a
+// fresh Local Color Table for every single frame. The panel's GIF decoder
+// doesn't handle a per-frame Local Color Table on every frame — it loses
+// sync on the data partway through, which is why only the first few frames
+// of a many-frame GIF would show and the rest played back garbled.
 func (d *Display) processAnimatedGif(src *gif.GIF) ([]byte, error) {
 	// Frames with zero delay get 50ms so the device never flashes its splash
 	const fallbackDelay = 5
 
-	out := gif.GIF{LoopCount: 0}
-	for i, frame := range src.Image {
-		// Flatten over opaque black to avoid transparency bleed
-		rgba := image.NewRGBA(frame.Bounds())
-		fillBlack(rgba)
-		draw.Draw(rgba, frame.Bounds(), frame, frame.Bounds().Min, draw.Over)
+	canvasW, canvasH := src.Config.Width, src.Config.Height
+	if canvasW == 0 || canvasH == 0 {
+		b := src.Image[0].Bounds()
+		canvasW, canvasH = b.Dx(), b.Dy()
+	}
+	canvas := image.NewRGBA(image.Rect(0, 0, canvasW, canvasH))
+	fillBlack(canvas)
 
-		out.Image = append(out.Image, toPaletted(d.fitToPanel(rgba)))
-		out.Disposal = append(out.Disposal, gif.DisposalBackground)
+	frames := make([]*image.RGBA, 0, len(src.Image))
+	delays := make([]int, 0, len(src.Image))
+	var restoreTo *image.RGBA
+	for i, frame := range src.Image {
+		disposal := byte(gif.DisposalNone)
+		if i < len(src.Disposal) {
+			disposal = src.Disposal[i]
+		}
+
+		if disposal == gif.DisposalPrevious {
+			restoreTo = image.NewRGBA(canvas.Bounds())
+			copy(restoreTo.Pix, canvas.Pix)
+		}
+
+		draw.Draw(canvas, frame.Bounds(), frame, frame.Bounds().Min, draw.Over)
+
+		snapshot := image.NewRGBA(canvas.Bounds())
+		copy(snapshot.Pix, canvas.Pix)
+		frames = append(frames, toRGBA(d.fitToPanel(snapshot)))
+
 		delay := src.Delay[i]
 		if delay == 0 {
 			delay = fallbackDelay
 		}
-		out.Delay = append(out.Delay, delay)
+		delays = append(delays, delay)
+
+		switch disposal {
+		case gif.DisposalBackground:
+			fillBlackRect(canvas, frame.Bounds())
+		case gif.DisposalPrevious:
+			if restoreTo != nil {
+				canvas = restoreTo
+			}
+		}
+	}
+
+	palette := buildSharedPalette(frames)
+	bounds := frames[0].Bounds()
+	out := gif.GIF{
+		LoopCount: 0,
+		Config:    image.Config{ColorModel: palette, Width: bounds.Dx(), Height: bounds.Dy()},
+	}
+	for i, f := range frames {
+		out.Image = append(out.Image, paletteFrame(f, palette))
+		out.Disposal = append(out.Disposal, gif.DisposalBackground)
+		out.Delay = append(out.Delay, delays[i])
 	}
 
 	var buf bytes.Buffer
@@ -210,33 +275,59 @@ func (d *Display) imageToGif(img image.Image) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// toPaletted converts img using a palette of its first 256 distinct colors.
-func toPaletted(img image.Image) *image.Paletted {
-	bounds := img.Bounds()
-	rgba, ok := img.(*image.RGBA)
-	if !ok {
-		rgba = image.NewRGBA(bounds)
-		draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+// toRGBA converts img to *image.RGBA, copying only if necessary.
+func toRGBA(img image.Image) *image.RGBA {
+	if rgba, ok := img.(*image.RGBA); ok {
+		return rgba
 	}
+	bounds := img.Bounds()
+	rgba := image.NewRGBA(bounds)
+	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+	return rgba
+}
 
+// buildSharedPalette scans every frame and returns a palette of up to 256
+// distinct colors shared across all of them, so an animation can be encoded
+// with one Global Color Table instead of a Local Color Table per frame.
+func buildSharedPalette(frames []*image.RGBA) color.Palette {
 	seen := make(map[color.RGBA]bool)
 	palette := make(color.Palette, 0, 256)
-	for y := bounds.Min.Y; y < bounds.Max.Y && len(palette) < 256; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X && len(palette) < 256; x++ {
-			c := rgba.RGBAAt(x, y)
-			if !seen[c] {
-				seen[c] = true
-				palette = append(palette, c)
+	for _, f := range frames {
+		b := f.Bounds()
+		for y := b.Min.Y; y < b.Max.Y && len(palette) < 256; y++ {
+			for x := b.Min.X; x < b.Max.X && len(palette) < 256; x++ {
+				c := f.RGBAAt(x, y)
+				if !seen[c] {
+					seen[c] = true
+					palette = append(palette, c)
+				}
 			}
+		}
+		if len(palette) >= 256 {
+			break
 		}
 	}
 	if len(palette) == 0 {
 		palette = append(palette, color.RGBA{0, 0, 0, 255})
 	}
+	return palette
+}
 
+// paletteFrame quantizes rgba against the given palette. The caller must
+// pass the same palette slice for every frame of an animation so Go's GIF
+// encoder recognizes it as one shared Global Color Table (it checks slice
+// identity, not just equal values).
+func paletteFrame(rgba *image.RGBA, palette color.Palette) *image.Paletted {
+	bounds := rgba.Bounds()
 	paletted := image.NewPaletted(bounds, palette)
 	draw.FloydSteinberg.Draw(paletted, bounds, rgba, bounds.Min)
 	return paletted
+}
+
+// toPaletted converts img using a palette of its first 256 distinct colors.
+func toPaletted(img image.Image) *image.Paletted {
+	rgba := toRGBA(img)
+	return paletteFrame(rgba, buildSharedPalette([]*image.RGBA{rgba}))
 }
 
 // rotate180 rotates an image 180 degrees
