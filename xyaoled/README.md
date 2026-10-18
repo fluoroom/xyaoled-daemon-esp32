@@ -25,7 +25,7 @@ Every frame starts with `99 aa 00 2e ff 88` followed by the total frame length
   Sent before every upload so it replaces the playlist instead of being
   appended to it.
 
-The power and clear commands were identified from
+The power and clear commands were identified in October 2026 from
 [samcgn/xyaoled-control](https://github.com/samcgn/xyaoled-control)'s
 `PROTOCOL.md`, an independent reverse-engineering of the same device family
 (not a fork — only these two command definitions were taken from it).

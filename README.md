@@ -58,7 +58,7 @@ See [xyaoled/README.md](xyaoled/README.md).
 
 The core protocol (BLE transport, upload/ack/retry logic) is this project's
 own reverse engineering of the vendor app. The `/power/on`, `/power/off` and
-`/clear` commands were identified from
+`/clear` commands were identified in October 2026 from
 [samcgn/xyaoled-control](https://github.com/samcgn/xyaoled-control), an
 independent Python reverse-engineering of the same device family — this is
 not a fork of it; only those command definitions (trivial byte sequences)
