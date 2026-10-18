@@ -37,6 +37,8 @@ Read from `.env` (falls back to `.env.example`); environment variables override 
 | POST | `/uploadTestGif` | Multipart `gif`; sent as animated |
 | GET | `/brightness/{n}` | Set brightness 5–125 |
 | GET | `/off`, `/on` | Dim to 5 / restore the previous level |
+| GET | `/power/on`, `/power/off` | Hardware power on/off (distinct from `/off`, `/on`, which only dim brightness) |
+| GET | `/clear` | Clear the screen and wipe the on-device playlist |
 | GET | `/reconnect` | Reconnect to the panel |
 | GET | `/health` | Health check |
 

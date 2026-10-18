@@ -29,9 +29,23 @@ const (
 	commandDelay = 30 * time.Millisecond
 )
 
-// clearPlaybackSequence returns the command that stops current playback.
-func clearPlaybackSequence(seq byte) []byte {
-	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0f, 0x00, 0x0a, 0x00, seq, 0x00, 0x00, 0x00, 0x00}
+// powerSequence returns the command that turns the panel itself on or off
+// (type 0x0011), documented in github.com/samcgn/xyaoled-control. This is a
+// hardware power state distinct from brightness-based "off" (dimming to 5).
+func powerSequence(on bool, seq byte) []byte {
+	state := byte(0x02)
+	if on {
+		state = 0x01
+	}
+	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0e, 0x00, 0x11, 0x00, seq, state, 0x01, 0x01}
+}
+
+// clearPlaylistSequence returns the command that clears the screen and wipes
+// the on-device playlist entirely (type 0x0005), documented in
+// github.com/samcgn/xyaoled-control. Sent before every upload so a new
+// program replaces the playlist instead of being appended to it.
+func clearPlaylistSequence(seq byte) []byte {
+	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x11, 0x00, 0x05, 0x00, seq, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00}
 }
 
 // nextSeq returns the next command sequence number. Every command carries
@@ -445,6 +459,29 @@ func (d *Device) SetBrightness(level uint8) error {
 	return err
 }
 
+// Power turns the panel's own power state on or off. This is a hardware
+// state distinct from SetBrightness: brightness 0 still leaves the panel
+// "on" (just dark), while this actually powers it down.
+func (d *Device) Power(on bool) error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+	d.txMu.Lock()
+	defer d.txMu.Unlock()
+	return d.send(powerSequence(on, d.nextSeq()))
+}
+
+// ClearPlaylist clears the screen and wipes the on-device playlist, so
+// previously uploaded programs no longer loop.
+func (d *Device) ClearPlaylist() error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+	d.txMu.Lock()
+	defer d.txMu.Unlock()
+	return d.send(clearPlaylistSequence(d.nextSeq()))
+}
+
 // firstPacketTrailer returns the 8 bytes that follow the packet count in the
 // first upload packet. The device's meaning for them is not recovered; these
 // are the values each header mode has always sent.
@@ -525,15 +562,20 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 		}
 	}
 
-	// Clear/stop any previous playback (best effort) so old playlists stop
+	// Wipe the on-device playlist (best effort) so this upload replaces it
+	// instead of being appended alongside whatever was already looping.
 	if d.debug {
-		fmt.Println("[BLE] Clearing previous playback state...")
+		fmt.Println("[BLE] Clearing playlist...")
 	}
-	// The panel never acks this command, so don't wait for one.
+	// The panel never acks this command, so don't wait for one; instead give
+	// it time to actually apply the clear before the next command lands,
+	// otherwise the upload that follows races it and gets appended instead
+	// of replacing the playlist.
 	d.drainNotifications()
-	if err := d.writePacket(clearPlaybackSequence(d.nextSeq())); err != nil && d.debug {
-		fmt.Printf("[BLE] Clear playback failed (continuing): %v\n", err)
+	if err := d.writePacket(clearPlaylistSequence(d.nextSeq())); err != nil && d.debug {
+		fmt.Printf("[BLE] Clear playlist failed (continuing): %v\n", err)
 	}
+	time.Sleep(clearPlaylistSettleDelay)
 
 	program := d.program
 	if opts.Program != nil {

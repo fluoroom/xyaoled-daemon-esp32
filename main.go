@@ -44,6 +44,9 @@ func main() {
 	http.HandleFunc("/on", handler.HandleOn)
 	http.HandleFunc("/brightness/", handler.HandleBrightness)
 	http.HandleFunc("/reconnect", handler.HandleReconnect)
+	http.HandleFunc("/power/on", handler.HandlePowerOn)
+	http.HandleFunc("/power/off", handler.HandlePowerOff)
+	http.HandleFunc("/clear", handler.HandleClearPlaylist)
 
 	// Start server
 	addr := cfg.HTTPHost + ":" + cfg.HTTPPort
@@ -59,6 +62,8 @@ func main() {
 	log.Println("  GET  /on - Restore brightness before off")
 	log.Println("  GET /brightness/{n} - Set brightness 5-125")
 	log.Println("  GET /reconnect - Trigger reconnect")
+	log.Println("  GET /power/on, /power/off - Hardware power on/off (distinct from /on, /off)")
+	log.Println("  GET /clear - Clear screen and wipe the on-device playlist")
 
 	// Handle graceful shutdown
 	go func() {

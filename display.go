@@ -418,6 +418,38 @@ func (d *Display) TurnOn(level uint8) error {
 	return d.SetBrightness(level)
 }
 
+// PowerOn sends the panel's hardware power-on command (distinct from /on,
+// which only restores brightness).
+func (d *Display) PowerOn() error {
+	if d.device == nil {
+		return fmt.Errorf("device not ready")
+	}
+	d.sendMutex.Lock()
+	defer d.sendMutex.Unlock()
+	return d.device.Power(true)
+}
+
+// PowerOff sends the panel's hardware power-off command (distinct from /off,
+// which only dims brightness to 5).
+func (d *Display) PowerOff() error {
+	if d.device == nil {
+		return fmt.Errorf("device not ready")
+	}
+	d.sendMutex.Lock()
+	defer d.sendMutex.Unlock()
+	return d.device.Power(false)
+}
+
+// ClearPlaylist clears the screen and wipes the on-device playlist.
+func (d *Display) ClearPlaylist() error {
+	if d.device == nil {
+		return fmt.Errorf("device not ready")
+	}
+	d.sendMutex.Lock()
+	defer d.sendMutex.Unlock()
+	return d.device.ClearPlaylist()
+}
+
 // Connect establishes a connection if currently disconnected.
 func (d *Display) Connect() error {
 	if d.device != nil && d.device.IsConnected() {

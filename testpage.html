@@ -66,6 +66,16 @@ button:disabled{opacity:.5;cursor:wait}
 </section>
 
 <section>
+<h2>Power / playlist</h2>
+<p class="sub" style="margin:0 0 10px">Hardware power is distinct from On/Off above (which only dim brightness).</p>
+<div class="row">
+<button data-get="/power/on" class="secondary">Power on</button>
+<button data-get="/power/off" class="secondary">Power off</button>
+<button data-get="/clear" class="secondary">Clear playlist</button>
+</div>
+</section>
+
+<section>
 <h2>Log</h2>
 <div id="log"></div>
 <div class="row"><button class="secondary" id="clear-log">Clear</button></div>

@@ -322,6 +322,45 @@ func (h *Handler) HandleBrightness(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]interface{}{"brightness": level})
 }
 
+// HandlePowerOn sends the panel's hardware power-on command.
+func (h *Handler) HandlePowerOn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.display.PowerOn(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeOK(w, nil)
+}
+
+// HandlePowerOff sends the panel's hardware power-off command.
+func (h *Handler) HandlePowerOff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.display.PowerOff(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeOK(w, nil)
+}
+
+// HandleClearPlaylist clears the screen and wipes the on-device playlist.
+func (h *Handler) HandleClearPlaylist(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.display.ClearPlaylist(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeOK(w, nil)
+}
+
 // HandleReconnect triggers a reconnect attempt.
 func (h *Handler) HandleReconnect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

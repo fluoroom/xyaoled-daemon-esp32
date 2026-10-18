@@ -37,6 +37,10 @@ const (
 
 	// uploadAppliedTimeout bounds the wait for 88ff05 after an upload.
 	uploadAppliedTimeout = 5 * time.Second
+
+	// clearPlaylistSettleDelay gives the panel time to apply a playlist clear
+	// before the next command lands; the clear sends no ack to wait on.
+	clearPlaylistSettleDelay = 500 * time.Millisecond
 )
 
 var (
