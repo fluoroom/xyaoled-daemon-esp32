@@ -15,8 +15,10 @@ package xyaoled
 //     arrives the same packet is re-sent from a timer (0x871d8c, 0x5548bc).
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"image/gif"
 	"time"
 )
 
@@ -69,6 +71,32 @@ func parseAck(b []byte) (ack, bool) {
 		return ack{}, false
 	}
 	return ack{index: uint16(b[3]) | uint16(b[4])<<8, ctr: b[5], status: b[8]}, true
+}
+
+// firstPacketTrailer returns the 8 bytes that follow the packet count in the
+// first upload packet:
+//
+//	<mode> 01 <total ms % 1000 u16> <frame count u16> <total seconds u16>
+//
+// The panel plays only as many frames as the count says, so it must match
+// the GIF. Layout taken from a vendor upload of a 172-frame, 30ms GIF
+// (00 01 a0 00 ac 00 05 00: 160ms, 172 frames, 5s). Static images use mode
+// 01 with one frame shown for 8s; if the GIF can't be decoded the trailer
+// falls back to 6 frames over 1.8s, the value sent before this was known.
+func firstPacketTrailer(gifData []byte, static bool) [8]byte {
+	if static {
+		return [8]byte{0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00}
+	}
+	frames, totalMs := 6, 1800
+	if g, err := gif.DecodeAll(bytes.NewReader(gifData)); err == nil && len(g.Image) > 0 {
+		frames, totalMs = len(g.Image), 0
+		for _, d := range g.Delay {
+			totalMs += d * 10
+		}
+	}
+	frames = min(frames, 0xffff)
+	ms, secs := totalMs%1000, min(totalMs/1000, 0xffff)
+	return [8]byte{0x00, 0x01, byte(ms), byte(ms >> 8), byte(frames), byte(frames >> 8), byte(secs), byte(secs >> 8)}
 }
 
 // buildUploadPackets splits payload into acknowledged packets for program

@@ -41,9 +41,21 @@ The GIF file is sent as-is, split into frames of at most 10000 bytes:
 | 8 | `07` | `08`, or `09` for the last |
 | 9–10 | seq, slot | seq, slot |
 | 11–13 | bytes remaining (uint24 LE) | bytes remaining |
-| 14–15 | frame count + 1 | frame index (1-based) |
-| 16–23 | mode trailer (meaning unknown) | — |
+| 14–15 | packet count + 1 | packet index (1-based) |
+| 16–23 | animation trailer (below) | — |
 | rest | GIF data | GIF data |
+
+The first packet's 8-byte trailer describes the animation:
+
+```
+<mode> 01 <total ms % 1000 u16> <GIF frame count u16> <total seconds u16>
+```
+
+The panel plays only as many GIF frames as this count says, so it must match
+the GIF (a hardcoded 6 here was the old "6 frame limit"). Animations use mode
+`00`. Static images use `01 01 00 00 01 00 08 00`, i.e. one frame for 8 s.
+The layout comes from a vendor-app HCI snoop capture of a 172-frame, 30 ms
+GIF upload (`00 01 a0 00 ac 00 05 00` = 160 ms + 5 s = 5160 ms, 172 frames).
 
 Each frame is written in MTU−3 sized writes, then the sender waits for the
 device's ack before sending the next frame:

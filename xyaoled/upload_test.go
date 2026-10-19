@@ -2,6 +2,9 @@ package xyaoled
 
 import (
 	"bytes"
+	"image"
+	"image/color"
+	"image/gif"
 	"testing"
 	"time"
 )
@@ -94,5 +97,40 @@ func TestAckTimeout(t *testing.T) {
 	}
 	if got := ackTimeout(13); got != 400*time.Millisecond {
 		t.Errorf("ackTimeout(13) = %v", got)
+	}
+}
+
+func encodeTestGif(t *testing.T, frames, delay int) []byte {
+	t.Helper()
+	g := &gif.GIF{}
+	for i := 0; i < frames; i++ {
+		g.Image = append(g.Image, image.NewPaletted(image.Rect(0, 0, 96, 16), color.Palette{color.Black, color.White}))
+		g.Delay = append(g.Delay, delay)
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestFirstPacketTrailer(t *testing.T) {
+	tests := []struct {
+		name   string
+		data   []byte
+		static bool
+		want   [8]byte
+	}{
+		// Captured from the vendor app uploading a 172-frame, 30ms GIF.
+		{"vendor capture", encodeTestGif(t, 172, 3), false, [8]byte{0x00, 0x01, 0xa0, 0x00, 0xac, 0x00, 0x05, 0x00}},
+		// From an older vendor capture: 164 frames, 40ms.
+		{"older capture", encodeTestGif(t, 164, 4), false, [8]byte{0x00, 0x01, 0x30, 0x02, 0xa4, 0x00, 0x06, 0x00}},
+		{"static", encodeTestGif(t, 1, 60000), true, [8]byte{0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00}},
+		{"undecodable", []byte("not a gif"), false, testTrailer},
+	}
+	for _, tt := range tests {
+		if got := firstPacketTrailer(tt.data, tt.static); got != tt.want {
+			t.Errorf("%s: trailer = % x, want % x", tt.name, got, tt.want)
+		}
 	}
 }

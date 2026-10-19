@@ -482,18 +482,6 @@ func (d *Device) ClearPlaylist() error {
 	return d.send(clearPlaylistSequence(d.nextSeq()))
 }
 
-// firstPacketTrailer returns the 8 bytes that follow the packet count in the
-// first upload packet. The device's meaning for them is not recovered; these
-// are the values each header mode has always sent.
-func firstPacketTrailer(opts SendOptions) [8]byte {
-	switch {
-	case opts.LogHeader:
-		return [8]byte{0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00}
-	default:
-		return [8]byte{0x00, 0x01, 0x20, 0x03, 0x06, 0x00, 0x01, 0x00}
-	}
-}
-
 // SendGif sends a GIF buffer to the display using default options
 func (d *Device) SendGif(gifBuffer []byte) error {
 	return d.SendGifWithOptions(gifBuffer, SendOptions{})
@@ -582,7 +570,7 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 		program = *opts.Program
 	}
 	seq := d.nextSeq()
-	packets := buildUploadPackets(gifBuffer, program, seq, firstPacketTrailer(opts))
+	packets := buildUploadPackets(gifBuffer, program, seq, firstPacketTrailer(gifBuffer, opts.LogHeader))
 
 	// A panel that answers data with 88ff05 has dropped out of receive mode:
 	// select the program again and restart the upload.
