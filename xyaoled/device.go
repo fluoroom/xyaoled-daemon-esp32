@@ -19,10 +19,15 @@ const (
 	notifyCharUUID = "ae02"
 
 	// Protocol constants
-	// defaultProgram is the program (playlist position) uploads replace.
-	defaultProgram = 0x02
-	maxBrightness  = 125
-	minBrightness  = 0
+	// ProgramPlaylist appends an upload to the on-device playlist (the panel
+	// answers 88ff05 01 <index> with the index it was stored at).
+	// ProgramLive shows an upload immediately without storing it, until
+	// ResumePlaylist.
+	ProgramPlaylist = 0x02
+	ProgramLive     = 0x03
+	defaultProgram  = ProgramPlaylist
+	maxBrightness   = 125
+	minBrightness   = 0
 
 	// Timing constants
 	initDelay    = 300 * time.Millisecond
@@ -47,6 +52,24 @@ func powerSequence(on bool, seq byte) []byte {
 func clearPlaylistSequence(seq byte) []byte {
 	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x11, 0x00, 0x05, 0x00, seq, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00}
 }
+
+// resumeSequence returns type 0x000a, which leaves the live program and
+// resumes the playlist. The vendor app sends it whenever it enters or
+// leaves a screen, and it is part of the connect handshake.
+func resumeSequence(seq byte) []byte {
+	return []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x0f, 0x00, 0x0a, 0x00, seq, 0x00, 0x00, 0x00, 0x00}
+}
+
+// handshakeSequence is the first command of the connect handshake (type
+// 0x0000). The vendor app sends the current time here, YY MM DD hh mm ss
+// and weekday (Sunday = 0), followed by "01 00" and 6 bytes that change
+// with the time. Those 6 bytes are checked: the panel answers a frame with
+// a new time and the old 6 bytes with 88ff0f and disconnects. How they are
+// derived is not known, so this replays a frame the panel accepts
+// (2025-12-27 00:22:41, a Saturday).
+var handshakeSequence = []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x1f, 0x00, 0x00, 0x00, 0x02, 0x00,
+	0x19, 0x0c, 0x1b, 0x00, 0x16, 0x29, 0x06, 0x01, 0x00, 0xc5, 0x7c, 0x82, 0x2e, 0x07,
+	0x11, 0x00, 0x00, 0x00, 0x00}
 
 // nextSeq returns the next command sequence number. Every command carries
 // its own number, as the vendor app does.
@@ -79,11 +102,13 @@ type Device struct {
 // SendOptions controls how GIF payloads are written to the device.
 // ForceReinit reruns the connection handshake before the upload; LogHeader
 // selects the header used for static images; Program overrides the program
-// (playlist position) the upload replaces.
+// the upload goes to (ProgramPlaylist or ProgramLive); Append adds a
+// playlist upload to the playlist instead of replacing it.
 type SendOptions struct {
 	ForceReinit bool
 	LogHeader   bool
 	Program     *uint8
+	Append      bool
 }
 
 // NewDevice creates a new XYAOLED device instance
@@ -314,10 +339,7 @@ func (d *Device) initialize() error {
 	if d.debug {
 		fmt.Println("[BLE] Sending init command 1/5 (initial handshake)...")
 	}
-	cmd1 := []byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, 0x1f, 0x00, 0x00, 0x00, 0x02, 0x00,
-		0x19, 0x0c, 0x1b, 0x00, 0x16, 0x29, 0x06, 0x01, 0x00, 0xc5, 0x7c, 0x82, 0x2e, 0x07,
-		0x11, 0x00, 0x00, 0x00, 0x00}
-	if err := d.send(cmd1); err != nil {
+	if err := d.send(handshakeSequence); err != nil {
 		return err
 	}
 	if d.debug {
@@ -482,6 +504,30 @@ func (d *Device) ClearPlaylist() error {
 	return d.send(clearPlaylistSequence(d.nextSeq()))
 }
 
+// ResumePlaylist leaves the live program and plays the playlist again.
+func (d *Device) ResumePlaylist() error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+	d.txMu.Lock()
+	defer d.txMu.Unlock()
+	return d.send(resumeSequence(d.nextSeq()))
+}
+
+// SendCommand writes a raw command: magic and length are added, body starts
+// with the command type. For protocol experiments.
+func (d *Device) SendCommand(body []byte) error {
+	if !d.isConnected {
+		return errors.New("device not connected")
+	}
+	d.txMu.Lock()
+	defer d.txMu.Unlock()
+	n := 8 + len(body)
+	frame := append([]byte{0x99, 0xaa, 0x00, 0x2e, 0xff, 0x88, byte(n), byte(n >> 8)}, body...)
+	d.drainNotifications()
+	return d.writePacket(frame)
+}
+
 // SendGif sends a GIF buffer to the display using default options
 func (d *Device) SendGif(gifBuffer []byte) error {
 	return d.SendGifWithOptions(gifBuffer, SendOptions{})
@@ -550,24 +596,27 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 		}
 	}
 
-	// Wipe the on-device playlist (best effort) so this upload replaces it
-	// instead of being appended alongside whatever was already looping.
-	if d.debug {
-		fmt.Println("[BLE] Clearing playlist...")
-	}
-	// The panel never acks this command, so don't wait for one; instead give
-	// it time to actually apply the clear before the next command lands,
-	// otherwise the upload that follows races it and gets appended instead
-	// of replacing the playlist.
-	d.drainNotifications()
-	if err := d.writePacket(clearPlaylistSequence(d.nextSeq())); err != nil && d.debug {
-		fmt.Printf("[BLE] Clear playlist failed (continuing): %v\n", err)
-	}
-	time.Sleep(clearPlaylistSettleDelay)
-
 	program := d.program
 	if opts.Program != nil {
 		program = *opts.Program
+	}
+	live := program == ProgramLive
+
+	// Wipe the on-device playlist (best effort) so this upload replaces it
+	// instead of being appended alongside whatever was already looping.
+	if !live && !opts.Append {
+		if d.debug {
+			fmt.Println("[BLE] Clearing playlist...")
+		}
+		// The panel never acks this command, so don't wait for one; instead
+		// give it time to actually apply the clear before the next command
+		// lands, otherwise the upload that follows races it and gets appended
+		// instead of replacing the playlist.
+		d.drainNotifications()
+		if err := d.writePacket(clearPlaylistSequence(d.nextSeq())); err != nil && d.debug {
+			fmt.Printf("[BLE] Clear playlist failed (continuing): %v\n", err)
+		}
+		time.Sleep(clearPlaylistSettleDelay)
 	}
 	seq := d.nextSeq()
 	packets := buildUploadPackets(gifBuffer, program, seq, firstPacketTrailer(gifBuffer, opts.LogHeader))
@@ -596,7 +645,10 @@ func (d *Device) sendGifAttempt(gifBuffer []byte, opts SendOptions) error {
 	if d.debug {
 		fmt.Println("[BLE] ✓ GIF sent and acknowledged")
 	}
-	d.waitUploadApplied()
+	// Live uploads aren't stored, so the panel sends no 88ff05 for them.
+	if !live {
+		d.waitUploadApplied()
+	}
 	return nil
 }
 

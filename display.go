@@ -118,6 +118,54 @@ func (d *Display) ShowAnimatedGif(data []byte) error {
 	return nil
 }
 
+// encode converts image or GIF bytes to the GIF the panel plays, reporting
+// whether it is a static image.
+func (d *Display) encode(data []byte) (gifData []byte, static bool, err error) {
+	if src, err := gif.DecodeAll(bytes.NewReader(data)); err == nil && len(src.Image) > 1 {
+		gifData, err = d.processAnimatedGif(src)
+		return gifData, false, err
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to decode image: %w", err)
+	}
+	gifData, err = d.imageToGif(d.fitToPanel(img))
+	return gifData, true, err
+}
+
+// ShowPlaylist replaces the on-device playlist with items (images or GIFs),
+// played in order.
+func (d *Display) ShowPlaylist(items [][]byte) error {
+	encoded := make([][]byte, len(items))
+	static := make([]bool, len(items))
+	for i, item := range items {
+		var err error
+		if encoded[i], static[i], err = d.encode(item); err != nil {
+			return fmt.Errorf("playlist item %d: %w", i+1, err)
+		}
+	}
+	for i := range encoded {
+		opts := xyaoled.SendOptions{LogHeader: static[i], Append: i > 0}
+		if err := d.send(encoded[i], opts); err != nil {
+			return fmt.Errorf("failed to send playlist item %d/%d: %w", i+1, len(items), err)
+		}
+	}
+	log.Printf("✓ Sent playlist of %d item(s)", len(items))
+	return nil
+}
+
+// ShowLive shows an image or GIF immediately without touching the playlist,
+// as the vendor app's drawing screen does. The playlist comes back with
+// ResumePlaylist.
+func (d *Display) ShowLive(data []byte) error {
+	gifData, static, err := d.encode(data)
+	if err != nil {
+		return err
+	}
+	program := uint8(xyaoled.ProgramLive)
+	return d.send(gifData, xyaoled.SendOptions{LogHeader: static, Program: &program})
+}
+
 // send uploads gifData. Images are ignored while the screen is off
 // (brightness <= 5).
 func (d *Display) send(gifData []byte, opts xyaoled.SendOptions) error {
@@ -539,6 +587,40 @@ func (d *Display) ClearPlaylist() error {
 	d.sendMutex.Lock()
 	defer d.sendMutex.Unlock()
 	return d.device.ClearPlaylist()
+}
+
+// ClearScreen blanks the screen with a black live frame; the playlist is
+// kept and comes back with ResumePlaylist.
+func (d *Display) ClearScreen() error {
+	img := image.NewRGBA(image.Rect(0, 0, d.width, d.height))
+	fillBlack(img)
+	gifData, err := d.imageToGif(img)
+	if err != nil {
+		return err
+	}
+	program := uint8(xyaoled.ProgramLive)
+	return d.send(gifData, xyaoled.SendOptions{LogHeader: true, Program: &program})
+}
+
+// ResumePlaylist leaves the live view (ShowLive, ClearScreen) and plays the
+// playlist again.
+func (d *Display) ResumePlaylist() error {
+	if d.device == nil {
+		return fmt.Errorf("device not ready")
+	}
+	d.sendMutex.Lock()
+	defer d.sendMutex.Unlock()
+	return d.device.ResumePlaylist()
+}
+
+// SendCommand writes a raw command body (for protocol experiments).
+func (d *Display) SendCommand(body []byte) error {
+	if d.device == nil {
+		return fmt.Errorf("device not ready")
+	}
+	d.sendMutex.Lock()
+	defer d.sendMutex.Unlock()
+	return d.device.SendCommand(body)
 }
 
 // Connect establishes a connection if currently disconnected.

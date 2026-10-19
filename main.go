@@ -47,6 +47,10 @@ func main() {
 	http.HandleFunc("/power/on", handler.HandlePowerOn)
 	http.HandleFunc("/power/off", handler.HandlePowerOff)
 	http.HandleFunc("/clear", handler.HandleClearPlaylist)
+	http.HandleFunc("/clear-screen", handler.HandleClearScreen)
+	http.HandleFunc("/resume", handler.HandleResume)
+	http.HandleFunc("/playlist", handler.HandlePlaylist)
+	http.HandleFunc("/live", handler.HandleLive)
 
 	// Start server
 	addr := cfg.HTTPHost + ":" + cfg.HTTPPort
@@ -64,6 +68,10 @@ func main() {
 	log.Println("  GET /reconnect - Trigger reconnect")
 	log.Println("  GET /power/on, /power/off - Hardware power on/off (distinct from /on, /off)")
 	log.Println("  GET /clear - Clear screen and wipe the on-device playlist")
+	log.Println("  GET /clear-screen - Blank the screen, keep the playlist")
+	log.Println("  GET /resume - Leave /live or /clear-screen, play the playlist")
+	log.Println("  POST /playlist - Replace the playlist (multipart \"file\", repeated)")
+	log.Println("  POST /live - Show an image/GIF now without touching the playlist")
 
 	// Handle graceful shutdown
 	go func() {

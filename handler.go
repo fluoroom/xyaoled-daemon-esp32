@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image/gif"
@@ -192,6 +193,12 @@ func (h *Handler) HandleUploadTest(w http.ResponseWriter, r *http.Request) {
 				err = h.display.ShowImage(data)
 			}
 		}
+	case "raw":
+		// hex body after the length field, e.g. "02 00 07 00 01 01 00 00 00"
+		var body []byte
+		if body, err = hex.DecodeString(strings.ReplaceAll(r.FormValue("hex"), " ", "")); err == nil {
+			err = h.display.SendCommand(body)
+		}
 	case "brightness_cycle":
 		for _, step := range parseBrightnessSteps(r.FormValue("brightness")) {
 			if err = h.display.SetBrightnessIfNotManualOff(step); err != nil {
@@ -355,6 +362,100 @@ func (h *Handler) HandleClearPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.display.ClearPlaylist(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeOK(w, nil)
+}
+
+// HandlePlaylist handles POST /playlist: every multipart "file" part, in
+// order, replaces the on-device playlist.
+func (h *Handler) HandlePlaylist(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, "Invalid form", http.StatusBadRequest)
+		return
+	}
+	var items [][]byte
+	for _, fh := range r.MultipartForm.File["file"] {
+		f, err := fh.Open()
+		if err != nil {
+			http.Error(w, "Unreadable file", http.StatusBadRequest)
+			return
+		}
+		data, err := io.ReadAll(f)
+		f.Close()
+		if err != nil || len(data) == 0 {
+			http.Error(w, "Unreadable file", http.StatusBadRequest)
+			return
+		}
+		items = append(items, data)
+	}
+	if len(items) == 0 {
+		http.Error(w, "No files provided", http.StatusBadRequest)
+		return
+	}
+	if err := h.display.ShowPlaylist(items); err != nil {
+		log.Printf("Error sending playlist: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeOK(w, map[string]interface{}{"items": len(items)})
+}
+
+// HandleLive handles POST /live: an image or GIF, as multipart "file" or the
+// raw request body, shown immediately without touching the playlist, until
+// GET /resume. Frames posted back to back make a live view of about 7 fps.
+func (h *Handler) HandleLive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var data []byte
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+		if err := r.ParseMultipartForm(10 << 20); err == nil {
+			data = readFormFile(r, "file")
+		}
+	} else {
+		data, _ = io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	}
+	if len(data) == 0 {
+		http.Error(w, "No image provided", http.StatusBadRequest)
+		return
+	}
+	start := time.Now()
+	if err := h.display.ShowLive(data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeOK(w, map[string]interface{}{"ms": time.Since(start).Milliseconds()})
+}
+
+// HandleClearScreen blanks the screen but keeps the playlist (GET /resume
+// brings it back).
+func (h *Handler) HandleClearScreen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.display.ClearScreen(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeOK(w, nil)
+}
+
+// HandleResume leaves the live view (/live, /clear-screen) and plays the
+// playlist again.
+func (h *Handler) HandleResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := h.display.ResumePlaylist(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
