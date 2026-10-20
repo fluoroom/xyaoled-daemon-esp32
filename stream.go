@@ -14,7 +14,7 @@ import (
 // Streamer shows frames received over WebSocket in the live program (3),
 // at most fps per second. Only the newest frame is kept: frames arriving
 // faster than the panel can take them are dropped rather than queued, so
-// the picture never lags behind. A client can override the rate (1-30 fps).
+// the picture never lags behind. A client can override the rate (1-5 fps).
 // The playlist resumes, and the configured rate comes back, resumeDelay
 // after the last client disconnects; a client reconnecting within that
 // window (a dropped socket, a camera hiccup) keeps the live view.
@@ -32,7 +32,7 @@ type Streamer struct {
 	pending  *time.Timer // resumeDelay countdown after the last disconnect
 }
 
-const maxStreamFPS = 30
+const maxStreamFPS = 5
 
 func fpsInterval(fps int) time.Duration {
 	return time.Second / time.Duration(max(1, min(maxStreamFPS, fps)))
@@ -145,7 +145,7 @@ var upgrader = websocket.Upgrader{ReadBufferSize: 64 << 10, WriteBufferSize: 102
 
 // HandleStream handles the /stream WebSocket: every binary message is an
 // image (PNG, JPEG or GIF) shown in the live program. ?fps=N or a text
-// message "fps=N" overrides STREAM_FPS (1-30). Closing the socket goes back
+// message "fps=N" overrides STREAM_FPS (1-5). Closing the socket goes back
 // to the playlist.
 func (s *Streamer) HandleStream(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)

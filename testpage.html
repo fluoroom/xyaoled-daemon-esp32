@@ -172,10 +172,10 @@ $('set-bright').onclick = () => call('brightness ' + bright.value, '/brightness/
 // Each binary message is a 96x16 PNG; the daemon keeps only the newest
 // frame and sends at most `fps` per second (STREAM_FPS unless overridden
 // here with ?fps=N or an "fps=N" text message), so dropping is server side.
-let ws = null, fps = 7;
+let ws = null, fps = 4;
 const fpsSel = $('fps');
-for (let i = 1; i <= 30; i++) fpsSel.append(new Option(i, i));
-function setFps(n){ fps = n; fpsSel.value = n; }
+for (let i = 1; i <= 5; i++) fpsSel.append(new Option(i, i));
+function setFps(n){ fps = Math.max(1, Math.min(5, n)); fpsSel.value = fps; }
 setFps(+store.get('xyao_fps') || fps);
 if (!store.get('xyao_fps'))  // no manual choice yet: start from the daemon's STREAM_FPS
   fetch('/health').then(r => r.json()).then(j => { if (j.config?.stream_fps) setFps(j.config.stream_fps) }).catch(() => {});

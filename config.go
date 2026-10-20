@@ -41,7 +41,7 @@ func LoadConfig() *Config {
 		DisplayHeight: 16,
 		HTTPPort:      "11001",
 		HTTPHost:      "0.0.0.0",
-		StreamFPS:     7,
+		StreamFPS:     4,
 
 		StreamResumeDelay: 1500 * time.Millisecond,
 	}
@@ -103,7 +103,7 @@ func (cfg *Config) set(key, value string) {
 		cfg.UpsideDown = value == "true"
 	case "STREAM_FPS":
 		if v, err := strconv.Atoi(value); err == nil && v > 0 {
-			cfg.StreamFPS = v
+			cfg.StreamFPS = min(v, maxStreamFPS)
 		}
 	case "STREAM_RESUME_DELAY":
 		if v, err := strconv.ParseFloat(value, 64); err == nil && v >= 0 {
