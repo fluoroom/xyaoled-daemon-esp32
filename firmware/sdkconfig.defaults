@@ -1,0 +1,12 @@
+CONFIG_IDF_TARGET="esp32c3"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Logs and console over the built-in USB Serial/JTAG (/dev/ttyACM0)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# One 1.5 MB app (no OTA, flashed over USB) and a 2.4 MB LittleFS scratch
+# partition for uploads; see partitions.csv
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

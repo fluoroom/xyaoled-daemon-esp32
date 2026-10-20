@@ -1,5 +1,10 @@
-.env
-xyaoled-daemon
 *.log
 *.txt
-.brightness
+!CMakeLists.txt
+
+# ESP-IDF
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock

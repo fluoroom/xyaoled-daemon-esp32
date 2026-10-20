@@ -1,76 +1,37 @@
-# XYAOLED Daemon
+# XYAOLED ESP32
 
-HTTP daemon that keeps a Bluetooth connection to an XYAOLED LED panel and
-displays images sent to it. Images are resized to the panel (96x16 by default);
-GIFs keep their frame timing and loop forever. Every send reinitialises the
-panel first.
+Standalone firmware for an ESP32-C3 that keeps a Bluetooth connection to an
+XYAOLED LED panel and displays images sent to it over Wi-Fi, with the HTTP
+API of the original Go daemon.
 
-## Build and run
+| Path | |
+|---|---|
+| [`firmware/`](firmware) | ESP-IDF firmware, in C |
+| [`docs/ESP32_PORT.md`](docs/ESP32_PORT.md) | Port plan, setup and feature checklist |
+| [`reference/go-daemon/xyaoled/README.md`](reference/go-daemon/xyaoled/README.md) | Reverse-engineered panel protocol |
+| [`reference/go-daemon/`](reference/go-daemon) | Original Linux daemon in Go, kept as the reference (git submodule of [fluoroom/xyaoled-daemon](https://github.com/fluoroom/xyaoled-daemon)) |
 
-```bash
-go build -o xyaoled-daemon .
-./xyaoled-daemon
-```
-
-See [DOCKER.md](DOCKER.md) for running in a container.
-
-## Configuration
-
-Read from `.env` (falls back to `.env.example`); environment variables override it.
-
-| Key | Default | |
-|---|---|---|
-| `LED_PANEL_MAC` | — | Panel MAC address |
-| `LED_DISPLAY_WIDTH` / `LED_DISPLAY_HEIGHT` | 96 / 16 | Panel size |
-| `HTTP_HOST` / `HTTP_PORT` | 0.0.0.0 / 11001 | Listen address |
-| `UPSIDE_DOWN` | false | Rotate images 180° |
-| `DEBUG_BLE` | false | Log every BLE write and ack |
-| `STREAM_FPS` | 4 | Most frames per second `/stream` sends over Bluetooth; extra frames are dropped. Capped at 5 |
-| `STREAM_RESUME_DELAY` | 1.5 | Seconds after the last `/stream` client disconnects before the playlist resumes; a reconnect within it keeps the live view |
-
-## Endpoints
-
-| Method | Path | |
-|---|---|---|
-| GET | `/test` | Test page: connect, send, brightness, 96×16 drawing, webcam stream |
-| POST | `/display`, `/display-r` | JSON `{"image": "<base64>", "type": "static"\|"animated"}`; `type` is detected when empty |
-| POST | `/upload` | Multipart `file`; animated if it is a multi-frame GIF |
-| POST | `/playlist` | Multipart `file`, repeated: replaces the playlist with these items, played in order and looped |
-| POST | `/live` | Image or GIF as multipart `file` or the raw body: shown now without touching the playlist, until `/resume` or the next upload. Frames posted back to back give about 7 fps |
-| WS | `/stream` | Live stream: every binary message is an image (PNG/JPEG/GIF, resized like any upload) shown in the live program. Only the newest frame is kept and at most `STREAM_FPS` are sent per second (`?fps=N` or a text message `fps=N` overrides it, 1–5). While a stream is open, playlist requests (`/display`, `/upload`, `/playlist`, `/clear`, `/resume`, ...) get `409` and are ignored. Closing the socket resumes the playlist after `STREAM_RESUME_DELAY` |
-| GET | `/clear-screen` | Blank the screen, keep the playlist (`/resume` brings it back) |
-| GET | `/resume` | Leave `/live` or `/clear-screen` and play the playlist |
-| POST | `/uploadTest` | Multipart `command`: `connect`, `disconnect`, `send_animated` (+ `animated` file), `send_static` (+ `static` file), `screen_on`, `screen_off`, `brightness_cycle` (+ `brightness` steps), `raw` (+ `hex`: a command from its type byte on, e.g. `0a00 01 00000000`; for protocol experiments) |
-| POST | `/uploadTestGif` | Multipart `gif`; sent as animated |
-| GET | `/brightness/{n}` | Set brightness 5–125 |
-| GET | `/off`, `/on` | Dim to 5 / restore the previous level |
-| GET | `/power/on`, `/power/off` | Hardware power on/off (distinct from `/off`, `/on`, which only dim brightness) |
-| GET | `/clear` | Clear the screen and wipe the on-device playlist |
-| GET | `/reconnect` | Reconnect to the panel |
-| GET | `/health` | Health check |
-
-Older `/uploadTest` command names (`send_*_reinit`, `send_*_no_reinit`,
-`send_playlist`) still work; they all send with reinit. `GET /upload`,
-`/uploadTest` and `/uploadTestGif` redirect to `/test`.
+## Build
 
 ```bash
-curl -X POST http://localhost:11001/display \
-  -H "Content-Type: application/json" \
-  -d "{\"image\":\"$(base64 -w 0 animation.gif)\"}"
+git clone --recurse-submodules https://github.com/fluoroom/xyaoled-daemon-esp32.git
+# already cloned without it: git submodule update --init
+# update the Go reference:    git submodule update --remote reference/go-daemon
 
-curl -F file=@first.gif -F file=@second.png http://localhost:11001/playlist
-curl --data-binary @frame.png http://localhost:11001/live
-curl http://localhost:11001/resume
+. ~/esp/esp-idf-v6.0.3/export.sh
+cd firmware
+idf.py build flash monitor
 ```
 
-## Protocol
+See [docs/ESP32_PORT.md](docs/ESP32_PORT.md#setup) for the toolchain and
+serial-port setup.
 
-See [xyaoled/README.md](xyaoled/README.md).
+## Credits
 
 The core protocol (BLE transport, upload/ack/retry logic, animation header,
 playlist and live programs) is this project's own reverse engineering of the
-vendor app, from its code and from HCI snoop captures of it. The `/power/on`, `/power/off` and
-`/clear` commands were identified in October 2026 from
+vendor app, from its code and from HCI snoop captures of it. The `/power/on`,
+`/power/off` and `/clear` commands were identified in October 2026 from
 [samcgn/xyaoled-control](https://github.com/samcgn/xyaoled-control), an
 independent Python reverse-engineering of the same device family — this is
 not a fork of it; only those command definitions (trivial byte sequences)
