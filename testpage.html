@@ -24,6 +24,14 @@ button:disabled{opacity:.5;cursor:wait}
 #bval{font-variant-numeric:tabular-nums;min-width:3ch}
 #log{font:12px/1.5 ui-monospace,monospace;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 #log .ok{color:var(--ok)}#log .err{color:var(--err)}
+canvas.px{display:block;width:100%;aspect-ratio:6/1;image-rendering:pixelated;background:#000;border:1px solid var(--line);border-radius:4px;touch-action:none}
+#draw{cursor:crosshair}
+select,input[type=color]{padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}
+input[type=color]{width:44px;height:36px;padding:2px}
+.swatch{width:28px;height:28px;padding:0;border:1px solid var(--line);border-radius:4px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);margin-right:6px}
+.dot.on{background:var(--ok)}
+#ws-state{font-size:13px;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -73,6 +81,37 @@ button:disabled{opacity:.5;cursor:wait}
 <button data-get="/power/off" class="secondary">Power off</button>
 <button data-get="/clear" class="secondary">Clear playlist</button>
 </div>
+</section>
+
+<section>
+<h2>Live stream</h2>
+<p class="sub" style="margin:0 0 10px">Frames go over the <code>/stream</code> WebSocket and are shown in drawing mode (program 3). The playlist comes back when the socket closes.</p>
+<div class="row" style="margin-top:0">
+<span id="ws-state"><span class="dot" id="ws-dot"></span>disconnected</span>
+<label for="fps" style="margin:0 0 0 auto;font-weight:400">FPS</label>
+<select id="fps" title="Overrides STREAM_FPS for this stream"></select>
+<button class="secondary" id="ws-close">Disconnect (back to playlist)</button>
+</div>
+
+<label>Drawing (96×16) — left button paints, right button erases. “Send drawing” opens the stream; later strokes update live.</label>
+<canvas id="draw" class="px" width="96" height="16"></canvas>
+<div class="row">
+<input type="color" id="pen" value="#ff3b30" title="Pen colour">
+<span id="swatches"></span>
+<label style="margin:0;font-weight:400"><input type="checkbox" id="eraser"> Eraser</label>
+<button class="secondary" id="draw-clear">Clear</button>
+<button id="draw-send">Send drawing</button>
+</div>
+
+<label for="cam">Video device</label>
+<div class="row" style="margin-top:0">
+<select id="cam"><option value="">Default camera</option></select>
+<button id="cam-start">Start</button>
+<button class="secondary" id="cam-stop">Stop</button>
+</div>
+<label>Camera preview (what the panel gets)</label>
+<canvas id="cam-out" class="px" width="96" height="16"></canvas>
+<video id="cam-video" muted playsinline hidden></video>
 </section>
 
 <section>
@@ -129,6 +168,184 @@ if (saved) bright.value = saved;
 $('bval').textContent = bright.value;
 bright.oninput = () => { $('bval').textContent = bright.value; store.set('xyao_bright', bright.value); };
 $('set-bright').onclick = () => call('brightness ' + bright.value, '/brightness/' + bright.value);
+// ---- Live stream over the /stream WebSocket -----------------------------
+// Each binary message is a 96x16 PNG; the daemon keeps only the newest
+// frame and sends at most `fps` per second (STREAM_FPS unless overridden
+// here with ?fps=N or an "fps=N" text message), so dropping is server side.
+let ws = null, fps = 7;
+const fpsSel = $('fps');
+for (let i = 1; i <= 30; i++) fpsSel.append(new Option(i, i));
+function setFps(n){ fps = n; fpsSel.value = n; }
+setFps(+store.get('xyao_fps') || fps);
+if (!store.get('xyao_fps'))  // no manual choice yet: start from the daemon's STREAM_FPS
+  fetch('/health').then(r => r.json()).then(j => { if (j.config?.stream_fps) setFps(j.config.stream_fps) }).catch(() => {});
+fetch('/health').then(r => r.json()).then(j => { resumeDelayMs = j.config?.stream_resume_delay_ms ?? resumeDelayMs }).catch(() => {});
+fpsSel.onchange = () => {
+  setFps(+fpsSel.value);
+  store.set('xyao_fps', fps);
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send('fps=' + fps);
+  if (camTimer) { clearInterval(camTimer); camTimer = setInterval(grabFrame, 1000 / fps); }
+  log(`stream → ${fps} fps`, 'ok');
+};
+
+function setWsState(text, on){
+  $('ws-state').replaceChildren(Object.assign(document.createElement('span'), {className: 'dot' + (on ? ' on' : ''), id: 'ws-dot'}), text);
+}
+// A socket that drops without the user asking (network blip, daemon restart)
+// is reopened after a second; the daemon holds the live view for
+// STREAM_RESUME_DELAY meanwhile, so the playlist doesn't flash in between.
+let wanted = false, retryAt = 0, resumeDelayMs = 1500;
+function openSocket(){
+  wanted = true;
+  if (ws && ws.readyState <= WebSocket.OPEN) return ws;
+  if (Date.now() < retryAt) return null;  // backing off after a drop
+  const sock = ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/stream?fps=' + fps);
+  setWsState('connecting…', false);
+  sock.onopen = () => { setWsState('streaming', true); log('stream → connected', 'ok'); };
+  sock.onclose = () => {
+    if (ws !== sock) return;  // closed on purpose, or a newer socket took over
+    ws = null;
+    if (!wanted) return;
+    retryAt = Date.now() + 1000;
+    setWsState('reconnecting…', false);
+    log('stream → connection lost, reconnecting', 'err');
+    // The camera timer reopens it on its next frame; drawing needs a nudge
+    // (resending also restores the drawing if the playlist came back).
+    setTimeout(() => { if (wanted && !ws && !camStream) sendCanvas(draw); }, 1000);
+  };
+  return sock;
+}
+function closeSocket(){
+  wanted = false; stopCamera();
+  if (!ws) return;
+  ws.close(); ws = null;
+  setWsState('disconnected', false);
+  log(`stream → closed, playlist resumes in ${resumeDelayMs / 1000} s`, 'ok');
+}
+$('ws-close').onclick = closeSocket;
+
+// Send canvas as PNG, skipping the frame if the previous one is still buffered.
+function sendCanvas(canvas){
+  const sock = openSocket();
+  if (!sock) return;
+  canvas.toBlob(blob => {
+    if (!blob) return;
+    const go = () => { if (sock.bufferedAmount < 64 << 10) sock.send(blob) };
+    sock.readyState === WebSocket.OPEN ? go() : sock.addEventListener('open', go, {once: true});
+  }, 'image/png');
+}
+
+// ---- Drawing: 96x16 pixel art ---------------------------------------------
+const draw = $('draw'), dctx = draw.getContext('2d');
+function clearDrawing(){ dctx.fillStyle = '#000'; dctx.fillRect(0, 0, 96, 16); }
+clearDrawing();
+const savedDrawing = store.get('xyao_drawing');
+if (savedDrawing) { const img = new Image(); img.onload = () => dctx.drawImage(img, 0, 0); img.src = savedDrawing; }
+
+['#ffffff','#ff3b30','#ff9500','#ffcc00','#34c759','#00c7be','#007aff','#af52de'].forEach(c => {
+  const b = document.createElement('button');
+  b.className = 'swatch'; b.style.background = c; b.title = c;
+  b.onclick = () => { $('pen').value = c; $('eraser').checked = false; };
+  $('swatches').append(b);
+});
+
+let drawPending = false;
+function drawingChanged(){
+  store.set('xyao_drawing', draw.toDataURL());
+  // Only push while the socket is up and the camera isn't using it.
+  if (!ws || camStream || drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => { drawPending = false; sendCanvas(draw); });
+}
+function cellAt(e){
+  const r = draw.getBoundingClientRect();
+  return [Math.min(95, Math.max(0, Math.floor((e.clientX - r.left) / r.width * 96))),
+          Math.min(15, Math.max(0, Math.floor((e.clientY - r.top) / r.height * 16)))];
+}
+let last = null, erase = false;
+function plot(x, y){
+  dctx.fillStyle = erase || $('eraser').checked ? '#000' : $('pen').value;
+  dctx.fillRect(x, y, 1, 1);
+}
+// Bresenham line from the previous cell so fast drags don't leave gaps.
+function line([x0, y0], [x1, y1]){
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    plot(x0, y0);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+draw.oncontextmenu = e => e.preventDefault();
+draw.onpointerdown = e => {
+  draw.setPointerCapture(e.pointerId);
+  erase = e.button === 2;  // right button erases
+  last = cellAt(e); line(last, last); drawingChanged();
+};
+draw.onpointermove = e => {
+  if (!last) return;
+  const cur = cellAt(e);
+  if (cur[0] !== last[0] || cur[1] !== last[1]) { line(last, cur); last = cur; drawingChanged(); }
+};
+draw.onpointerup = draw.onpointercancel = () => { last = null; };
+$('draw-clear').onclick = () => { clearDrawing(); drawingChanged(); };
+$('draw-send').onclick = () => { stopCamera(); sendCanvas(draw); };
+
+// ---- Camera: crop to the panel's 6:1 and send at STREAM_FPS ----------------
+const video = $('cam-video'), camOut = $('cam-out'), cctx = camOut.getContext('2d');
+let camStream = null, camTimer = null;
+
+async function listCameras(){
+  const sel = $('cam'), keep = sel.value || store.get('xyao_cam') || '';
+  const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+  sel.replaceChildren(...devices.map((d, i) => new Option(d.label || `Camera ${i + 1}`, d.deviceId)));
+  if (!devices.length) sel.append(new Option('No video devices', ''));
+  if (devices.some(d => d.deviceId === keep)) sel.value = keep;
+}
+if (navigator.mediaDevices?.enumerateDevices) {
+  listCameras().catch(() => {});
+  navigator.mediaDevices.addEventListener?.('devicechange', () => listCameras().catch(() => {}));
+}
+
+// Cover-crop the centre of the video into 96x16 so the picture fills the panel
+// (the daemon's own resize is contain-fit, which would leave a 21px sliver of
+// a 4:3 webcam).
+function grabFrame(){
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return;
+  const target = 96 / 16;
+  let sw = vw, sh = vw / target;
+  if (sh > vh) { sh = vh; sw = vh * target; }
+  cctx.imageSmoothingQuality = 'high';
+  cctx.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, 96, 16);
+  sendCanvas(camOut);
+}
+
+async function startCamera(){
+  if (!navigator.mediaDevices?.getUserMedia) { log('camera → needs https or localhost', 'err'); return; }
+  stopCamera();
+  const id = $('cam').value;
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({video: id ? {deviceId: {exact: id}} : true, audio: false});
+  } catch (e) { log('camera → ' + e.message, 'err'); return; }
+  store.set('xyao_cam', id);
+  video.srcObject = camStream;
+  await video.play();
+  listCameras().catch(() => {});  // labels are only visible after permission
+  openSocket();
+  camTimer = setInterval(grabFrame, 1000 / fps);
+  log(`camera → streaming at ${fps} fps`, 'ok');
+}
+function stopCamera(){
+  clearInterval(camTimer); camTimer = null;
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; video.srcObject = null; }
+}
+$('cam-start').onclick = startCamera;
+$('cam-stop').onclick = closeSocket;
+window.addEventListener('pagehide', closeSocket);
 </script>
 </body>
 </html>

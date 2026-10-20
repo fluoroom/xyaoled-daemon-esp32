@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/gif"
 	"io"
@@ -57,6 +58,19 @@ func writeOK(w http.ResponseWriter, extra map[string]interface{}) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// sendError reports a failed send: 409 with the reason while a stream holds
+// the panel, otherwise 500 with msg (err's own text when msg is empty).
+func sendError(w http.ResponseWriter, err error, msg string) {
+	if errors.Is(err, errStreaming) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if msg == "" {
+		msg = err.Error()
+	}
+	http.Error(w, msg, http.StatusInternalServerError)
+}
+
 func readFormFile(r *http.Request, field string) []byte {
 	file, _, err := r.FormFile(field)
 	if err != nil {
@@ -94,7 +108,7 @@ func (h *Handler) HandleDisplay(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.show(data, req.Type); err != nil {
 		log.Printf("Error displaying image: %v", err)
-		http.Error(w, "Failed to display image", http.StatusInternalServerError)
+		sendError(w, err, "Failed to display image")
 		return
 	}
 	writeOK(w, nil)
@@ -106,8 +120,10 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "healthy",
 		"config": map[string]interface{}{
-			"width":  h.display.width,
-			"height": h.display.height,
+			"width":                  h.display.width,
+			"height":                 h.display.height,
+			"stream_fps":             h.display.config.StreamFPS,
+			"stream_resume_delay_ms": h.display.config.StreamResumeDelay.Milliseconds(),
 		},
 	})
 }
@@ -133,7 +149,7 @@ func (h *Handler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.show(data, ""); err != nil {
 		log.Printf("Error displaying uploaded image: %v", err)
-		http.Error(w, "Failed to display image", http.StatusInternalServerError)
+		sendError(w, err, "Failed to display image")
 		return
 	}
 	writeOK(w, nil)
@@ -217,7 +233,7 @@ func (h *Handler) HandleUploadTest(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("/uploadTest %s failed: %v", r.FormValue("command"), err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err, "")
 		return
 	}
 	w.Write([]byte("ok"))
@@ -245,7 +261,7 @@ func (h *Handler) HandleUploadTestGif(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.display.ShowAnimatedGif(data); err != nil {
 		log.Printf("/uploadTestGif failed: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err, "")
 		return
 	}
 	writeOK(w, nil)
@@ -362,7 +378,7 @@ func (h *Handler) HandleClearPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.display.ClearPlaylist(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err, "")
 		return
 	}
 	writeOK(w, nil)
@@ -400,7 +416,7 @@ func (h *Handler) HandlePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.display.ShowPlaylist(items); err != nil {
 		log.Printf("Error sending playlist: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err, "")
 		return
 	}
 	writeOK(w, map[string]interface{}{"items": len(items)})
@@ -456,7 +472,7 @@ func (h *Handler) HandleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.display.ResumePlaylist(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendError(w, err, "")
 		return
 	}
 	writeOK(w, nil)

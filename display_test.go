@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"image/color"
 	"image/gif"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testDisplay() *Display {
@@ -104,5 +106,64 @@ func TestUploadTestRejectsBadRequests(t *testing.T) {
 	}
 	if code := post("send_animated"); code != http.StatusInternalServerError {
 		t.Errorf("send without file: %d", code)
+	}
+}
+
+func TestStreamingBlocksPlaylistRequests(t *testing.T) {
+	d := testDisplay()
+	d.currentBright = 80
+	d.streaming.Store(true)
+
+	frame, err := d.imageToGif(image.NewRGBA(image.Rect(0, 0, 96, 16)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ShowImage(frame); !errors.Is(err, errStreaming) {
+		t.Errorf("ShowImage while streaming: got %v, want errStreaming", err)
+	}
+	if err := d.ShowPlaylist([][]byte{frame}); !errors.Is(err, errStreaming) {
+		t.Errorf("ShowPlaylist while streaming: got %v", err)
+	}
+	if err := d.ClearPlaylist(); err != errStreaming {
+		t.Errorf("ClearPlaylist while streaming: got %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	NewHandler(d).HandleClearPlaylist(rec, httptest.NewRequest(http.MethodGet, "/clear", nil))
+	if rec.Code != http.StatusConflict {
+		t.Errorf("/clear while streaming: status %d, want 409", rec.Code)
+	}
+}
+
+func TestStreamResumesAfterDelayUnlessReconnected(t *testing.T) {
+	d := testDisplay()
+	s := NewStreamer(d, 7, 50*time.Millisecond)
+
+	s.connect()
+	if err := d.ResumePlaylist(); !errors.Is(err, errStreaming) {
+		t.Fatalf("/resume while streaming: got %v, want errStreaming", err)
+	}
+
+	// A drop followed by a reconnect inside the delay keeps the live view.
+	s.disconnect()
+	time.Sleep(20 * time.Millisecond)
+	s.connect()
+	time.Sleep(100 * time.Millisecond)
+	if !d.streaming.Load() {
+		t.Fatal("playlist resumed although the client reconnected within the delay")
+	}
+
+	// A real disconnect holds until the delay has passed, then resumes.
+	s.disconnect()
+	time.Sleep(20 * time.Millisecond)
+	if !d.streaming.Load() {
+		t.Fatal("playlist resumed before the delay")
+	}
+	deadline := time.Now().Add(time.Second)
+	for d.streaming.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if d.streaming.Load() {
+		t.Fatal("playlist never resumed after the delay")
 	}
 }

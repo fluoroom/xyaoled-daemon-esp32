@@ -20,6 +20,7 @@ func main() {
 	log.Printf("  Upside Down: %v", cfg.UpsideDown)
 	log.Printf("  HTTP Server: %s:%s", cfg.HTTPHost, cfg.HTTPPort)
 	log.Printf("  Debug BLE: %v", cfg.DebugBLE)
+	log.Printf("  Stream FPS: %d (resume playlist %v after disconnect)", cfg.StreamFPS, cfg.StreamResumeDelay)
 
 	// Create display
 	log.Println("Connecting to LED panel...")
@@ -31,6 +32,7 @@ func main() {
 
 	// Create HTTP handler
 	handler := NewHandler(display)
+	streamer := NewStreamer(display, cfg.StreamFPS, cfg.StreamResumeDelay)
 
 	// Setup routes
 	http.HandleFunc("/display", handler.HandleDisplay)
@@ -51,6 +53,7 @@ func main() {
 	http.HandleFunc("/resume", handler.HandleResume)
 	http.HandleFunc("/playlist", handler.HandlePlaylist)
 	http.HandleFunc("/live", handler.HandleLive)
+	http.HandleFunc("/stream", streamer.HandleStream)
 
 	// Start server
 	addr := cfg.HTTPHost + ":" + cfg.HTTPPort
@@ -72,6 +75,7 @@ func main() {
 	log.Println("  GET /resume - Leave /live or /clear-screen, play the playlist")
 	log.Println("  POST /playlist - Replace the playlist (multipart \"file\", repeated)")
 	log.Println("  POST /live - Show an image/GIF now without touching the playlist")
+	log.Println("  WS   /stream - Live stream: binary image messages; playlist resumes a delay after disconnect")
 
 	// Handle graceful shutdown
 	go func() {

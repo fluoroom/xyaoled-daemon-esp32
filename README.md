@@ -25,16 +25,19 @@ Read from `.env` (falls back to `.env.example`); environment variables override 
 | `HTTP_HOST` / `HTTP_PORT` | 0.0.0.0 / 11001 | Listen address |
 | `UPSIDE_DOWN` | false | Rotate images 180° |
 | `DEBUG_BLE` | false | Log every BLE write and ack |
+| `STREAM_FPS` | 7 | Most frames per second `/stream` sends over Bluetooth; extra frames are dropped |
+| `STREAM_RESUME_DELAY` | 1.5 | Seconds after the last `/stream` client disconnects before the playlist resumes; a reconnect within it keeps the live view |
 
 ## Endpoints
 
 | Method | Path | |
 |---|---|---|
-| GET | `/test` | Test page: connect, send, brightness |
+| GET | `/test` | Test page: connect, send, brightness, 96×16 drawing, webcam stream |
 | POST | `/display`, `/display-r` | JSON `{"image": "<base64>", "type": "static"\|"animated"}`; `type` is detected when empty |
 | POST | `/upload` | Multipart `file`; animated if it is a multi-frame GIF |
 | POST | `/playlist` | Multipart `file`, repeated: replaces the playlist with these items, played in order and looped |
 | POST | `/live` | Image or GIF as multipart `file` or the raw body: shown now without touching the playlist, until `/resume` or the next upload. Frames posted back to back give about 7 fps |
+| WS | `/stream` | Live stream: every binary message is an image (PNG/JPEG/GIF, resized like any upload) shown in the live program. Only the newest frame is kept and at most `STREAM_FPS` are sent per second (`?fps=N` or a text message `fps=N` overrides it, 1–30). While a stream is open, playlist requests (`/display`, `/upload`, `/playlist`, `/clear`, `/resume`, ...) get `409` and are ignored. Closing the socket resumes the playlist after `STREAM_RESUME_DELAY` |
 | GET | `/clear-screen` | Blank the screen, keep the playlist (`/resume` brings it back) |
 | GET | `/resume` | Leave `/live` or `/clear-screen` and play the playlist |
 | POST | `/uploadTest` | Multipart `command`: `connect`, `disconnect`, `send_animated` (+ `animated` file), `send_static` (+ `static` file), `screen_on`, `screen_off`, `brightness_cycle` (+ `brightness` steps), `raw` (+ `hex`: a command from its type byte on, e.g. `0a00 01 00000000`; for protocol experiments) |

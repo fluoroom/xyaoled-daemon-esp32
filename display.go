@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"xyaoled-daemon/xyaoled"
 
@@ -20,6 +22,10 @@ import (
 )
 
 const brightnessFile = ".brightness"
+
+// errStreaming refuses playlist (program 2) requests while a /stream client
+// holds the panel in the live program.
+var errStreaming = errors.New("live stream or drawing in progress; playlist requests are ignored until it ends")
 
 // Display handles the LED panel display logic
 type Display struct {
@@ -29,9 +35,10 @@ type Display struct {
 	debugBLE      bool
 	config        *Config
 	reconnecting  bool
-	sendMutex     sync.Mutex // Prevent concurrent sends to device
-	currentBright uint8      // Track current brightness at Display level (more reliable than device level)
-	isManualOff   bool       // Track if user explicitly turned screen off via /off endpoint
+	sendMutex     sync.Mutex  // Prevent concurrent sends to device
+	currentBright uint8       // Track current brightness at Display level (more reliable than device level)
+	isManualOff   bool        // Track if user explicitly turned screen off via /off endpoint
+	streaming     atomic.Bool // Set while /stream holds the live program; blocks playlist sends
 }
 
 // NewDisplay creates a new display instance
@@ -167,8 +174,13 @@ func (d *Display) ShowLive(data []byte) error {
 }
 
 // send uploads gifData. Images are ignored while the screen is off
-// (brightness <= 5).
+// (brightness <= 5), and playlist uploads while a stream is running.
 func (d *Display) send(gifData []byte, opts xyaoled.SendOptions) error {
+	live := opts.Program != nil && *opts.Program == xyaoled.ProgramLive
+	if !live && d.streaming.Load() {
+		log.Printf("Ignoring playlist upload: %v", errStreaming)
+		return errStreaming
+	}
 	if d.isScreenOff() {
 		return fmt.Errorf("screen is off (brightness <=5); ignoring image send request")
 	}
@@ -581,6 +593,9 @@ func (d *Display) PowerOff() error {
 
 // ClearPlaylist clears the screen and wipes the on-device playlist.
 func (d *Display) ClearPlaylist() error {
+	if d.streaming.Load() {
+		return errStreaming
+	}
 	if d.device == nil {
 		return fmt.Errorf("device not ready")
 	}
@@ -603,8 +618,15 @@ func (d *Display) ClearScreen() error {
 }
 
 // ResumePlaylist leaves the live view (ShowLive, ClearScreen) and plays the
-// playlist again.
+// playlist again. Refused while a stream holds the panel.
 func (d *Display) ResumePlaylist() error {
+	if d.streaming.Load() {
+		return errStreaming
+	}
+	return d.resumePlaylist()
+}
+
+func (d *Display) resumePlaylist() error {
 	if d.device == nil {
 		return fmt.Errorf("device not ready")
 	}

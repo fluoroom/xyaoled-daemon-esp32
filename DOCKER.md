@@ -59,6 +59,8 @@ All configuration is done via environment variables:
 - `HTTP_PORT` - HTTP server port (default: 11001)
 - `HTTP_HOST` - HTTP server host (default: 0.0.0.0)
 - `DEBUG_BLE` - Enable Bluetooth debugging (default: false)
+- `STREAM_FPS` - Max frames per second sent from the `/stream` WebSocket (default: 7)
+- `STREAM_RESUME_DELAY` - Seconds after the stream disconnects before the playlist resumes (default: 1.5)
 
 ### Bluetooth Access
 

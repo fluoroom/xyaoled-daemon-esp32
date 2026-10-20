@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all daemon configuration
@@ -24,6 +25,11 @@ type Config struct {
 
 	// Display orientation
 	UpsideDown bool
+
+	// Highest rate at which /stream frames are sent over Bluetooth
+	StreamFPS int
+	// How long after the last /stream client disconnects the playlist resumes
+	StreamResumeDelay time.Duration
 }
 
 // LoadConfig loads configuration from .env file and environment variables
@@ -35,6 +41,9 @@ func LoadConfig() *Config {
 		DisplayHeight: 16,
 		HTTPPort:      "11001",
 		HTTPHost:      "0.0.0.0",
+		StreamFPS:     7,
+
+		StreamResumeDelay: 1500 * time.Millisecond,
 	}
 
 	// Try to load .env, fall back to .env.example
@@ -62,7 +71,7 @@ func LoadConfig() *Config {
 		}
 	}
 
-	for _, key := range []string{"LED_PANEL_MAC", "LED_DISPLAY_WIDTH", "LED_DISPLAY_HEIGHT", "HTTP_PORT", "HTTP_HOST", "DEBUG_BLE", "UPSIDE_DOWN"} {
+	for _, key := range []string{"LED_PANEL_MAC", "LED_DISPLAY_WIDTH", "LED_DISPLAY_HEIGHT", "HTTP_PORT", "HTTP_HOST", "DEBUG_BLE", "UPSIDE_DOWN", "STREAM_FPS", "STREAM_RESUME_DELAY"} {
 		if val := os.Getenv(key); val != "" {
 			cfg.set(key, val)
 		}
@@ -92,5 +101,13 @@ func (cfg *Config) set(key, value string) {
 		cfg.DebugBLE = value == "true"
 	case "UPSIDE_DOWN":
 		cfg.UpsideDown = value == "true"
+	case "STREAM_FPS":
+		if v, err := strconv.Atoi(value); err == nil && v > 0 {
+			cfg.StreamFPS = v
+		}
+	case "STREAM_RESUME_DELAY":
+		if v, err := strconv.ParseFloat(value, 64); err == nil && v >= 0 {
+			cfg.StreamResumeDelay = time.Duration(v * float64(time.Second))
+		}
 	}
 }
