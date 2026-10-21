@@ -337,7 +337,7 @@ function openSocket(){
     log('stream → connection lost, reconnecting', 'err');
     // The camera timer reopens it on its next frame; drawing needs a nudge
     // (resending also restores the drawing if the playlist came back).
-    setTimeout(() => { if (wanted && !ws && !camStream) sendCanvas(draw); }, 1000);
+    setTimeout(() => { if (wanted && !ws && !camStream) sendDrawing(); }, 1000);
   };
   return sock;
 }
@@ -350,23 +350,45 @@ function closeSocket(){
 }
 $('ws-close').onclick = closeSocket;
 
-// Send canvas as PNG, skipping the frame if the previous one is still buffered.
-function sendCanvas(canvas){
+// Send a frame, skipping it if the previous one is still buffered.
+function sendBlob(blob){
   const sock = openSocket();
-  if (!sock) return;
-  canvas.toBlob(blob => {
-    if (!blob) return;
-    const go = () => { if (sock.bufferedAmount < 64 << 10) sock.send(blob) };
-    sock.readyState === WebSocket.OPEN ? go() : sock.addEventListener('open', go, {once: true});
-  }, 'image/png');
+  if (!sock || !blob) return;
+  const go = () => { if (sock.bufferedAmount < 64 << 10) sock.send(blob) };
+  sock.readyState === WebSocket.OPEN ? go() : sock.addEventListener('open', go, {once: true});
+}
+// Send canvas as PNG (the camera; see sendDrawing for the drawing).
+function sendCanvas(canvas){
+  canvas.toBlob(sendBlob, 'image/png');
 }
 
 // ---- Drawing: 96x16 pixel art ---------------------------------------------
+// The drawing's pixels live in drawPx and the canvas only shows them:
+// browsers with anti-fingerprinting (Brave, Firefox strict or private,
+// Safari private) add noise to whatever is read back from a canvas, which
+// turned a 10-colour drawing into ~370 colours and broke the stream's
+// colour limit. It is sent as a GIF built from drawPx and saved as hex.
 const draw = $('draw'), dctx = draw.getContext('2d');
-function clearDrawing(){ dctx.fillStyle = '#000'; dctx.fillRect(0, 0, 96, 16); }
+const drawPx = new Uint8ClampedArray(96 * 16 * 4);
+function showDrawing(){ dctx.putImageData(new ImageData(drawPx, 96, 16), 0, 0); }
+function clearDrawing(){ for (let i = 0; i < drawPx.length; i += 4) drawPx.set([0, 0, 0, 255], i); showDrawing(); }
+function saveDrawing(){
+  let hex = '';
+  for (let i = 0; i < drawPx.length; i += 4) hex += ((drawPx[i] << 16 | drawPx[i + 1] << 8 | drawPx[i + 2]) | 1 << 24).toString(16).slice(1);
+  store.set('xyao_drawing_px', hex);
+}
+function sendDrawing(){ sendBlob(new Blob([gifEncode([{rgba: drawPx, delay: 0}], 96, 16)], {type: 'image/gif'})); }
 clearDrawing();
-const savedDrawing = store.get('xyao_drawing');
-if (savedDrawing) { const img = new Image(); img.onload = () => dctx.drawImage(img, 0, 0); img.src = savedDrawing; }
+const savedPx = store.get('xyao_drawing_px'), savedDrawing = store.get('xyao_drawing');
+if (savedPx && savedPx.length === 96 * 16 * 6) {
+  for (let p = 0; p < 96 * 16; p++) drawPx.set([...[0, 2, 4].map(k => parseInt(savedPx.substr(p * 6 + k, 2), 16)), 255], p * 4);
+  showDrawing();
+} else if (savedDrawing) {
+  // Saved by an older page as a PNG: it already carries the browser's noise.
+  const img = new Image();
+  img.onload = () => { dctx.drawImage(img, 0, 0); drawPx.set(dctx.getImageData(0, 0, 96, 16).data); saveDrawing(); };
+  img.src = savedDrawing;
+}
 
 ['#ffffff','#ff3b30','#ff9500','#ffcc00','#34c759','#00c7be','#007aff','#af52de'].forEach(c => {
   const b = document.createElement('button');
@@ -377,11 +399,11 @@ if (savedDrawing) { const img = new Image(); img.onload = () => dctx.drawImage(i
 
 let drawPending = false;
 function drawingChanged(){
-  store.set('xyao_drawing', draw.toDataURL());
+  saveDrawing();
   // Only push while the socket is up and the camera isn't using it.
   if (!ws || camStream || drawPending) return;
   drawPending = true;
-  requestAnimationFrame(() => { drawPending = false; sendCanvas(draw); });
+  requestAnimationFrame(() => { drawPending = false; sendDrawing(); });
 }
 function cellAt(e){
   const r = draw.getBoundingClientRect();
@@ -390,7 +412,10 @@ function cellAt(e){
 }
 let last = null, erase = false;
 function plot(x, y){
-  dctx.fillStyle = erase || $('eraser').checked ? '#000' : $('pen').value;
+  const hex = erase || $('eraser').checked ? '#000000' : $('pen').value;
+  const v = parseInt(hex.slice(1), 16);
+  drawPx.set([v >> 16, v >> 8 & 255, v & 255, 255], (y * 96 + x) * 4);
+  dctx.fillStyle = hex;
   dctx.fillRect(x, y, 1, 1);
 }
 // Bresenham line from the previous cell so fast drags don't leave gaps.
@@ -418,7 +443,7 @@ draw.onpointermove = e => {
 };
 draw.onpointerup = draw.onpointercancel = () => { last = null; };
 $('draw-clear').onclick = () => { clearDrawing(); drawingChanged(); };
-$('draw-send').onclick = () => { stopCamera(); sendCanvas(draw); };
+$('draw-send').onclick = () => { stopCamera(); sendDrawing(); };
 
 // ---- Camera: crop to the panel's 6:1 and send at STREAM_FPS ----------------
 const video = $('cam-video'), camOut = $('cam-out'), cctx = camOut.getContext('2d');
