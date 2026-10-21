@@ -131,6 +131,8 @@ def test_pages_and_health():
     check(r.status == 200 and b'XYAOLED test page' in r.body, f'/test {r.status}')
     r = get('/config')
     check(r.status == 200 and b'XYAOLED configuration' in r.body, f'/config {r.status}')
+    r = get('/')
+    check(r.status == 302 and r.headers.get('Location') == '/config', f'GET /: {r.status}')
     for p in ('/upload', '/uploadTest', '/uploadTestGif'):
         r = get(p)
         check(r.status == 302 and r.headers.get('Location') == '/test', f'GET {p}: {r.status}')

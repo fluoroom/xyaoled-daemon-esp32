@@ -207,6 +207,11 @@ static esp_err_t h_to_test(httpd_req_t *req)
 	return redirect(req, "/test");
 }
 
+static esp_err_t h_root(httpd_req_t *req)
+{
+	return redirect(req, "/config");
+}
+
 // ---- Image endpoints ----
 
 // /display, /display-r: {"image": "<base64>", "type": "static"|"animated"}.
@@ -969,6 +974,7 @@ typedef struct {
 } route_t;
 
 static const route_t routes[] = {
+	{"/", HTTP_GET, h_root},
 	{"/health", HTTP_GET, h_health},
 	{"/test", HTTP_GET, h_test},
 	{"/config", HTTP_GET, h_config_page},
@@ -1027,6 +1033,11 @@ esp_err_t http_start(void)
 	if ((err = stream_register(server)) != ESP_OK)
 		return err;
 	wifi_set_ap_hook(portal_hook);
+	// The portal may have opened before the server existed (first boot).
+	wifi_status_t ws;
+	wifi_status(&ws);
+	if (ws.ap_active)
+		portal_hook(true);
 	ESP_LOGI(TAG, "HTTP server on port %u", c.server_port);
 	ESP_LOGI(TAG, "Endpoints:");
 	ESP_LOGI(TAG, "  POST /display, /display-r - Display an image (JSON, base64)");
