@@ -335,6 +335,19 @@ esp_err_t xy_panel_send_gif(const xy_blob_t *gif, const xy_send_opts_t *opts)
 	return err;
 }
 
+uint16_t xy_panel_conn_interval(void)
+{
+	return 0;
+}
+
+void xy_panel_last_timing(uint32_t *select_ms, uint32_t *data_ms)
+{
+	xSemaphoreTake(s.lock, portMAX_DELAY);
+	*select_ms = s.session.select_ms;
+	*data_ms = s.session.data_ms;
+	xSemaphoreGive(s.lock);
+}
+
 const uint8_t *xy_panel_sim_last(uint32_t *len, uint8_t trailer[8], uint8_t *program)
 {
 	*len = s.last_len;

@@ -61,3 +61,7 @@ void xy_blob_file(xy_blob_t *b, void *file, uint32_t len);
 // playlist uploads, waits for the panel to store it. Retried up to three
 // times, except on connection errors.
 esp_err_t xy_panel_send_gif(const xy_blob_t *gif, const xy_send_opts_t *opts);
+// Connection interval in 1.25 ms units (0 when not connected).
+uint16_t xy_panel_conn_interval(void);
+// Timing of the last upload's final attempt (xy_session_t select_ms, data_ms).
+void xy_panel_last_timing(uint32_t *select_ms, uint32_t *data_ms);

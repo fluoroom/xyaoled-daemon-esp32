@@ -861,6 +861,23 @@ static esp_err_t h_api_status(httpd_req_t *req)
 	}
 	cJSON_AddNumberToObject(p, "brightness", display_brightness());
 	cJSON_AddBoolToObject(p, "streaming", display_streaming());
+	cJSON_AddNumberToObject(p, "conn_interval_ms", xy_panel_conn_interval() * 1.25);
+
+	// Average time per stream frame since the stream started (decode and
+	// encode overlap the previous frame's send).
+	display_live_stats_t ls;
+	display_live_stats(&ls);
+	cJSON *st = cJSON_AddObjectToObject(o, "stream");
+	cJSON_AddNumberToObject(st, "frames", ls.frames);
+	if (ls.frames) {
+		double n = ls.frames;
+		cJSON_AddNumberToObject(st, "decode_ms", ls.decode_us / 1000.0 / n);
+		cJSON_AddNumberToObject(st, "encode_ms", ls.encode_us / 1000.0 / n);
+		cJSON_AddNumberToObject(st, "select_ms", ls.select_ms / n);
+		cJSON_AddNumberToObject(st, "data_ms", ls.data_ms / n);
+		cJSON_AddNumberToObject(st, "max_send_ms", ls.max_send_ms);
+		cJSON_AddNumberToObject(st, "gif_bytes", ls.bytes / n);
+	}
 
 	size_t total, used;
 	storage_usage(&total, &used);

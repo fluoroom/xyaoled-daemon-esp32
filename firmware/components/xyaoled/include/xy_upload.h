@@ -46,6 +46,8 @@ typedef struct {
 	uint8_t last_ack_ctr;
 	bool have_last_ack_ctr;
 	bool debug;
+	// Timing of the last xy_upload: program select (until acked) and data.
+	uint32_t select_ms, data_ms;
 } xy_session_t;
 
 void xy_session_init(xy_session_t *s, const xy_link_t *link);

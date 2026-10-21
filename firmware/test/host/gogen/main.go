@@ -289,7 +289,16 @@ func gen(dir string) error {
 	}
 	small := pattern(image.Rect(0, 0, 8, 4), 2)
 	small.Palette = testPalette[:7]
-	for name, img := range map[string]image.Image{"png_rgba": rgba, "png_small": small} {
+	// A panel-sized RGBA frame like the test page's webcam: its raw data
+	// fits pngle's whole-image window.
+	panel := image.NewNRGBA(image.Rect(0, 0, panelW, panelH))
+	for y := 0; y < panelH; y++ {
+		for x := 0; x < panelW; x++ {
+			n := uint8((x*37 + y*91) % 50)
+			panel.SetNRGBA(x, y, color.NRGBA{uint8(x*2) + n, 200 - uint8(y*8) + n, 255 - uint8(x*2), 255})
+		}
+	}
+	for name, img := range map[string]image.Image{"png_rgba": rgba, "png_small": small, "png_panel": panel} {
 		var buf bytes.Buffer
 		if err := png.Encode(&buf, img); err != nil {
 			return err

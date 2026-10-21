@@ -121,7 +121,14 @@ struct _pngle_t {
 	uint8_t *next_out; // NULL indicates IDAT hasn't been processed yet
 	size_t  avail_out;
 	tinfl_decompressor inflator; // 11000 bytes
-	uint8_t lz_buf[TINFL_LZ_DICT_SIZE]; // 32768 bytes
+	// xyaoled: the output window is allocated at the first IDAT. When the
+	// whole decompressed image fits in less than TINFL_LZ_DICT_SIZE (any
+	// non-interlaced image up to ~32 KB of raw data, e.g. a 96x16 RGBA
+	// frame at 6 KB), it holds all of it, non-wrapping; otherwise it is the
+	// usual 32 KB ring.
+	uint8_t *lz_buf;
+	size_t lz_size;
+	int lz_flags;
 };
 
 const size_t PNGLE_T_SIZE = sizeof(pngle_t);
@@ -170,6 +177,7 @@ void pngle_reset(pngle_t *pngle)
 	pngle->error = "No error";
 
 	if (pngle->scanline_ringbuf) free(pngle->scanline_ringbuf);
+	if (pngle->lz_buf) free(pngle->lz_buf);
 	if (pngle->palette) free(pngle->palette);
 	if (pngle->trans_palette) free(pngle->trans_palette);
 #ifndef PNGLE_NO_GAMMA_CORRECTION
@@ -177,6 +185,7 @@ void pngle_reset(pngle_t *pngle)
 #endif
 
 	pngle->scanline_ringbuf = NULL;
+	pngle->lz_buf = NULL;
 	pngle->palette = NULL;
 	pngle->trans_palette = NULL;
 #ifndef PNGLE_NO_GAMMA_CORRECTION
@@ -593,7 +602,7 @@ static int pngle_handle_chunk(pngle_t *pngle, const uint8_t *buf, size_t len)
 			//debug_printf("[pngle]     in_bytes %zd, out_bytes %zd, next_out %p\n", in_bytes, out_bytes, pngle->next_out);
 
 			// XXX: tinfl_decompress always requires (next_out - lz_buf + avail_out) == TINFL_LZ_DICT_SIZE
-			tinfl_status status = tinfl_decompress(&pngle->inflator, (const mz_uint8 *)buf, &in_bytes, pngle->lz_buf, (mz_uint8 *)pngle->next_out, &out_bytes, TINFL_FLAG_HAS_MORE_INPUT | TINFL_FLAG_PARSE_ZLIB_HEADER);
+			tinfl_status status = tinfl_decompress(&pngle->inflator, (const mz_uint8 *)buf, &in_bytes, pngle->lz_buf, (mz_uint8 *)pngle->next_out, &out_bytes, TINFL_FLAG_HAS_MORE_INPUT | TINFL_FLAG_PARSE_ZLIB_HEADER | pngle->lz_flags);
 
 			//debug_printf("[pngle]       tinfl_decompress\n");
 			//debug_printf("[pngle]       => in_bytes %zd, out_bytes %zd, next_out %p, status %d\n", in_bytes, out_bytes, pngle->next_out, status);
@@ -609,18 +618,22 @@ static int pngle_handle_chunk(pngle_t *pngle, const uint8_t *buf, size_t len)
 
 			// debug_printf("[pngle]         => avail_out %zd, next_out %p\n", pngle->avail_out, pngle->next_out);
 
-			if (status == TINFL_STATUS_DONE || pngle->avail_out == 0) {
+			if (pngle->lz_flags & TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF) {
+				// The window holds the whole image: render as it comes, never wrap.
+				if (out_bytes > 0 && pngle_on_data(pngle, pngle->next_out - out_bytes, out_bytes) < 0) return -1;
+				if (pngle->avail_out == 0 && status == TINFL_STATUS_HAS_MORE_OUTPUT) return PNGLE_ERROR("IDAT stream longer than the image");
+			} else if (status == TINFL_STATUS_DONE || pngle->avail_out == 0) {
 				// Output buffer is full, or decompression is done, so write buffer to output file.
 				// XXX: This is the only chance to process the buffer.
 				uint8_t *read_ptr = pngle->lz_buf;
-				size_t n = TINFL_LZ_DICT_SIZE - (size_t)pngle->avail_out;
+				size_t n = pngle->lz_size - (size_t)pngle->avail_out;
 
 				// pngle_on_data() usually returns n, otherwise -1 on error
 				if (pngle_on_data(pngle, read_ptr, n) < 0) return -1;
 
 				// XXX: tinfl_decompress always requires (next_out - lz_buf + avail_out) == TINFL_LZ_DICT_SIZE
 				pngle->next_out = pngle->lz_buf;
-				pngle->avail_out = TINFL_LZ_DICT_SIZE;
+				pngle->avail_out = pngle->lz_size;
 			}
 
 			consume = in_bytes;
@@ -758,8 +771,19 @@ static int pngle_feed_internal(pngle_t *pngle, const uint8_t *buf, size_t len)
 
 			if (pngle->next_out == NULL) {
 				// Very first IDAT
+				// Raw size of a non-interlaced image: a filter byte and the
+				// packed pixels per row.
+				uint64_t raw = (uint64_t)pngle->hdr.height * (1 + ((uint64_t)pngle->hdr.width * pngle->channels * pngle->hdr.depth + 7) / 8);
+				pngle->lz_flags = 0;
+				pngle->lz_size = TINFL_LZ_DICT_SIZE;
+				if (!pngle->hdr.interlace && raw < TINFL_LZ_DICT_SIZE) {
+					pngle->lz_flags = TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+					pngle->lz_size = (size_t)raw;
+				}
+				pngle->lz_buf = (uint8_t *)PNGLE_CALLOC(1, pngle->lz_size, "lz_buf");
+				if (!pngle->lz_buf) return PNGLE_ERROR("Insufficient memory");
 				pngle->next_out = pngle->lz_buf;
-				pngle->avail_out = TINFL_LZ_DICT_SIZE;
+				pngle->avail_out = pngle->lz_size;
 
 				// callback
 				if (pngle->init_callback) pngle->init_callback(pngle, pngle->hdr.width, pngle->hdr.height);

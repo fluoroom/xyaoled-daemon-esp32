@@ -236,10 +236,14 @@ int xy_upload(xy_session_t *s, const xy_blob_t *gif, const xy_send_opts_t *o)
 	// select the program again and restart the upload.
 	for (int attempt = 1;; attempt++) {
 		LOG(s, "selecting program %u (seq %u)", o->program, seq);
+		uint32_t t0 = l->now_ms(l->ctx);
 		if ((err = select_program(s, o->program, seq)) != XY_OK)
 			return err;
+		uint32_t t1 = l->now_ms(l->ctx);
 		LOG(s, "uploading %u bytes in %u packet(s)", (unsigned)gif->len, (unsigned)xy_packet_count(gif->len));
 		err = upload_packets(s, gif, o->program, seq, trailer);
+		s->select_ms = t1 - t0;
+		s->data_ms = l->now_ms(l->ctx) - t1;
 		if (err != XY_ERR_NOT_READY || attempt == XY_MAX_PACKET_RESENDS)
 			break;
 	}

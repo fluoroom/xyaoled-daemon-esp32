@@ -20,6 +20,10 @@
 static const char *TAG = "xy_panel";
 
 #define PREFERRED_MTU 517
+// Connection interval, 1.25 ms units: 7.5 ms, as the phone app uses while
+// sending (btlogs). Each ack waits for a connection event, so this bounds
+// how fast frames go.
+#define CONN_ITVL 6
 #define MAX_WRITE 512 // the vendor app's chunk size
 #define NOTIFY_MAX 64
 #define NOTIFY_DEPTH 16
@@ -46,6 +50,7 @@ static struct {
 	ble_addr_t peer;
 	bool have_peer;
 	uint16_t mtu;
+	uint16_t conn_itvl; // current connection interval, in 1.25 ms units
 	uint16_t svc_start, svc_end;
 	uint16_t write_handle, notify_handle, notify_end, cccd_handle;
 
@@ -141,8 +146,12 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
 		}
 		return 0;
 	case BLE_GAP_EVENT_CONNECT:
-		if (ev->connect.status == 0)
+		if (ev->connect.status == 0) {
 			p.conn = ev->connect.conn_handle;
+			struct ble_gap_conn_desc desc;
+			if (ble_gap_conn_find(p.conn, &desc) == 0)
+				p.conn_itvl = desc.conn_itvl;
+		}
 		op_finish(ev->connect.status == 0 ? 0 : ESP_FAIL);
 		return 0;
 	case BLE_GAP_EVENT_DISCONNECT: {
@@ -172,6 +181,22 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
 	case BLE_GAP_EVENT_MTU:
 		p.mtu = ev->mtu.value;
 		return 0;
+	case BLE_GAP_EVENT_CONN_UPDATE: {
+		struct ble_gap_conn_desc desc;
+		if (ev->conn_update.status == 0 && ble_gap_conn_find(ev->conn_update.conn_handle, &desc) == 0) {
+			p.conn_itvl = desc.conn_itvl;
+			ESP_LOGI(TAG, "connection interval now %u.%02u ms", desc.conn_itvl * 125 / 100,
+				 desc.conn_itvl * 125 % 100);
+		}
+		return 0;
+	}
+	case BLE_GAP_EVENT_L2CAP_UPDATE_REQ:
+		// The panel asks for 20-30 ms right after connecting. It has no
+		// data length extension (27-byte link packets), so at 30 ms a
+		// stream frame takes several hundred ms; keep CONN_ITVL instead.
+		ESP_LOGI(TAG, "panel asks for a %u-%u interval (1.25 ms units); keeping %u",
+			 ev->conn_update_req.peer_params->itvl_min, ev->conn_update_req.peer_params->itvl_max, CONN_ITVL);
+		return BLE_ERR_CONN_PARMS;
 	}
 	return 0;
 }
@@ -439,7 +464,7 @@ static esp_err_t connect_locked(const xy_panel_config_t *cfg, uint32_t timeout_m
 	xy_panel_address(addr);
 	ESP_LOGI(TAG, "connecting to %s", addr);
 	struct ble_gap_conn_params cp = {
-		.scan_itvl = 0x10, .scan_window = 0x10, .itvl_min = 12, .itvl_max = 24,
+		.scan_itvl = 0x10, .scan_window = 0x10, .itvl_min = CONN_ITVL, .itvl_max = CONN_ITVL,
 		.latency = 0, .supervision_timeout = 400, .min_ce_len = 0, .max_ce_len = 0,
 	};
 	esp_err_t err = GATT_OP(ble_gap_connect(p.own_addr_type, &p.peer, OP_TIMEOUT_MS, &cp, gap_event, NULL));
@@ -471,7 +496,8 @@ static esp_err_t connect_locked(const xy_panel_config_t *cfg, uint32_t timeout_m
 
 	xy_session_init(&p.session, &link);
 	p.connected = true;
-	ESP_LOGI(TAG, "connected, MTU %u, writes of %u bytes", ble_att_mtu(p.conn), (unsigned)att_payload());
+	ESP_LOGI(TAG, "connected, MTU %u, writes of %u bytes, interval %u.%02u ms", ble_att_mtu(p.conn),
+		 (unsigned)att_payload(), p.conn_itvl * 125 / 100, p.conn_itvl * 125 % 100);
 	if ((err = initialize()) != ESP_OK) {
 		ESP_LOGE(TAG, "handshake failed: %s", xy_err_name(err));
 		ble_gap_terminate(p.conn, BLE_ERR_REM_USER_CONN_TERM);
@@ -640,6 +666,19 @@ void xy_blob_file(xy_blob_t *b, void *file, uint32_t len)
 	b->len = len;
 	b->read_at = file_read_at;
 	b->ctx = file;
+}
+
+uint16_t xy_panel_conn_interval(void)
+{
+	return p.conn != BLE_HS_CONN_HANDLE_NONE ? p.conn_itvl : 0;
+}
+
+void xy_panel_last_timing(uint32_t *select_ms, uint32_t *data_ms)
+{
+	xSemaphoreTake(p.lock, portMAX_DELAY);
+	*select_ms = p.session.select_ms;
+	*data_ms = p.session.data_ms;
+	xSemaphoreGive(p.lock);
 }
 
 esp_err_t xy_panel_send_gif(const xy_blob_t *gif, const xy_send_opts_t *opts)

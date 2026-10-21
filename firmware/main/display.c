@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -37,7 +38,10 @@ static struct {
 	bool manual_off;
 	uint8_t bright; // what the panel was last set to
 	char error[112];
+	display_live_stats_t live; // stream frames since the stream started
 } d;
+
+static portMUX_TYPE live_lock = portMUX_INITIALIZER_UNLOCKED; // d.live
 
 // ---- Errors ----
 
@@ -161,6 +165,7 @@ typedef struct {
 	mem_out_t mem;
 	bool static_image;
 	uint32_t frames, total_ms, bytes;
+	uint32_t decode_us, encode_us; // time decode_encode took
 } encoded_t;
 
 static void encoded_free(encoded_t *e)
@@ -187,7 +192,9 @@ static esp_err_t decode_encode(const img_reader_t *r, display_kind_t kind, bool 
 	if (!frames)
 		return image_error("frame store", IMG_ERR_NOMEM);
 	img_info_t info;
+	int64_t t0 = esp_timer_get_time();
 	img_err_t ierr = img_decode(r, frames, &info);
+	out->decode_us = (uint32_t)(esp_timer_get_time() - t0);
 	// "static" keeps the first frame of an animation.
 	if (ierr == IMG_ERR_FULL && kind == DISPLAY_STATIC)
 		ierr = IMG_OK;
@@ -207,7 +214,9 @@ static esp_err_t decode_encode(const img_reader_t *r, display_kind_t kind, bool 
 			}
 			w = (img_writer_t){file_write, f};
 		}
+		t0 = esp_timer_get_time();
 		ierr = img_encode_gif(frames, &w, &gi);
+		out->encode_us = (uint32_t)(esp_timer_get_time() - t0);
 		if (f && fclose(f) != 0 && ierr == IMG_OK)
 			ierr = IMG_ERR_IO;
 		if (ierr != IMG_OK) {
@@ -225,7 +234,8 @@ static esp_err_t decode_encode(const img_reader_t *r, display_kind_t kind, bool 
 	}
 done:
 	img_frames_free(frames);
-	unlink(FRAMES_PATH);
+	if (!in_ram)
+		unlink(FRAMES_PATH);
 	return err;
 }
 
@@ -331,14 +341,14 @@ static esp_err_t send_encoded(const encoded_t *e, uint8_t program, bool append)
 	return err;
 }
 
-static esp_err_t show(const img_reader_t *r, display_kind_t kind, uint8_t program, bool in_ram)
+static esp_err_t show(const img_reader_t *r, display_kind_t kind, uint8_t program)
 {
 	esp_err_t err = send_checks(program == XY_PROGRAM_LIVE);
 	if (err != ESP_OK)
 		return err;
 	xSemaphoreTake(d.work, portMAX_DELAY);
 	encoded_t e;
-	err = encode(r, kind, in_ram ? NULL : OUT_PATH, &e);
+	err = encode(r, kind, OUT_PATH, &e);
 	if (err == ESP_OK)
 		err = send_encoded(&e, program, false);
 	encoded_free(&e);
@@ -350,12 +360,12 @@ static esp_err_t show(const img_reader_t *r, display_kind_t kind, uint8_t progra
 
 esp_err_t display_show(const img_reader_t *r, display_kind_t kind)
 {
-	return show(r, kind, XY_PROGRAM_PLAYLIST, false);
+	return show(r, kind, XY_PROGRAM_PLAYLIST);
 }
 
 esp_err_t display_live(const img_reader_t *r)
 {
-	return show(r, DISPLAY_AUTO, XY_PROGRAM_LIVE, false);
+	return show(r, DISPLAY_AUTO, XY_PROGRAM_LIVE);
 }
 
 typedef struct {
@@ -372,11 +382,66 @@ static int mem_read(void *ctx, uint8_t *buf, size_t len)
 	return (int)k;
 }
 
-esp_err_t display_live_mem(const uint8_t *data, size_t len)
+struct display_live_frame {
+	encoded_t e;
+};
+
+esp_err_t display_live_encode(const uint8_t *data, size_t len, display_live_frame_t **out)
 {
+	display_live_frame_t *f = calloc(1, sizeof *f);
+	if (!f)
+		return image_error("frame", IMG_ERR_NOMEM);
 	mem_in_t m = {data, len, 0};
 	img_reader_t r = {mem_read, &m};
-	return show(&r, DISPLAY_AUTO, XY_PROGRAM_LIVE, true);
+	esp_err_t err = encode(&r, DISPLAY_AUTO, NULL, &f->e);
+	if (err != ESP_OK) {
+		display_live_free(f);
+		return err;
+	}
+	*out = f;
+	return ESP_OK;
+}
+
+uint32_t display_live_encode_us(const display_live_frame_t *f)
+{
+	return f->e.decode_us + f->e.encode_us;
+}
+
+void display_live_free(display_live_frame_t *f)
+{
+	if (f) {
+		encoded_free(&f->e);
+		free(f);
+	}
+}
+
+esp_err_t display_live_send(display_live_frame_t *f)
+{
+	esp_err_t err = send_checks(true);
+	if (err == ESP_OK) {
+		xSemaphoreTake(d.work, portMAX_DELAY);
+		int64_t t0 = esp_timer_get_time();
+		err = send_encoded(&f->e, XY_PROGRAM_LIVE, false);
+		uint32_t sent_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000);
+		xSemaphoreGive(d.work);
+		if (err == ESP_OK) {
+			uint32_t sel, data;
+			xy_panel_last_timing(&sel, &data);
+			taskENTER_CRITICAL(&live_lock);
+			display_live_stats_t *st = &d.live;
+			st->frames++;
+			st->decode_us += f->e.decode_us;
+			st->encode_us += f->e.encode_us;
+			st->select_ms += sel;
+			st->data_ms += data;
+			st->bytes += f->e.bytes;
+			if (sent_ms > st->max_send_ms)
+				st->max_send_ms = sent_ms;
+			taskEXIT_CRITICAL(&live_lock);
+		}
+	}
+	display_live_free(f);
+	return err;
 }
 
 // ---- Playlist ----
@@ -543,7 +608,19 @@ bool display_connected(void)
 
 void display_set_streaming(bool on)
 {
+	if (on && !atomic_load(&d.streaming)) {
+		taskENTER_CRITICAL(&live_lock);
+		d.live = (display_live_stats_t){0};
+		taskEXIT_CRITICAL(&live_lock);
+	}
 	atomic_store(&d.streaming, on);
+}
+
+void display_live_stats(display_live_stats_t *out)
+{
+	taskENTER_CRITICAL(&live_lock);
+	*out = d.live;
+	taskEXIT_CRITICAL(&live_lock);
 }
 
 bool display_streaming(void)

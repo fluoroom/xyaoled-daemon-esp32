@@ -30,8 +30,15 @@ const char *display_error_text(esp_err_t err);
 esp_err_t display_show(const img_reader_t *r, display_kind_t kind);
 // display_live shows an image at once without touching the playlist.
 esp_err_t display_live(const img_reader_t *r);
-// The same for /stream frames, decoded in RAM (no flash writes).
-esp_err_t display_live_mem(const uint8_t *data, size_t len);
+// /stream frames, in two steps so the next frame can be encoded while one
+// is sent: display_live_encode decodes and encodes in RAM (no flash, no
+// lock, so it runs alongside a send); display_live_send sends to the live
+// view and frees the frame.
+typedef struct display_live_frame display_live_frame_t;
+esp_err_t display_live_encode(const uint8_t *data, size_t len, display_live_frame_t **out);
+uint32_t display_live_encode_us(const display_live_frame_t *f); // decode + encode time
+esp_err_t display_live_send(display_live_frame_t *f);
+void display_live_free(display_live_frame_t *f);
 
 // Playlist: items are encoded as they arrive, then sent together.
 typedef struct display_playlist display_playlist_t;
@@ -58,5 +65,13 @@ void display_disconnect(void);
 void display_reconnect(void); // in the background
 
 void display_set_streaming(bool on);
+// Stream frames sent since the stream started, with the time each step
+// took in all (averages are sum / frames).
+typedef struct {
+	uint32_t frames, bytes;
+	uint64_t decode_us, encode_us;
+	uint32_t select_ms, data_ms, max_send_ms;
+} display_live_stats_t;
+void display_live_stats(display_live_stats_t *out);
 bool display_streaming(void);
 bool display_connected(void);

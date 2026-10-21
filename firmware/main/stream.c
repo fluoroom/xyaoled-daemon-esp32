@@ -5,6 +5,14 @@
 // happens stream_resume_delay after the last client leaves unless one
 // comes back; one task sends both frames and the resume, so a late frame
 // cannot land after it.
+//
+// Unlike Go, frames are encoded by a second task while the previous one
+// is being sent. The panel acks the next program select at once if it
+// comes right after the last data ack, but ~100 ms later if it comes once
+// the panel has started drawing (measured on the panel), so encoding
+// between the two (80 ms here, ~1 ms on a PC) cost almost two encodes per
+// frame. The encoder starts late enough that the frame it takes is about
+// as fresh as when encoding and sending took turns.
 #include "stream.h"
 
 #include <stdlib.h>
@@ -23,12 +31,21 @@ static const char *TAG = "stream";
 #define MAX_FRAME (64 * 1024)
 #define MAX_CLIENTS 4
 
+// Margin for the encoder to finish before the send in progress ends.
+#define ENCODE_MARGIN_US 30000
+
 static struct {
 	SemaphoreHandle_t mu;
-	TaskHandle_t task;
+	TaskHandle_t task, encoder;
 	esp_timer_handle_t pending; // resume countdown after the last disconnect
-	uint8_t *latest;
+	uint8_t *latest;            // newest frame received, not encoded yet
 	size_t latest_len;
+	display_live_frame_t *ready; // encoded, waiting for the sender
+	bool want;                   // the sender is ready for another frame
+	uint32_t gen;                // bumped at each resume: drops frames encoded for an ended stream
+	int64_t send_start_us;       // of the send in progress, 0 when idle
+	int64_t send_us, encode_us;  // the last ones, for the encoder's start
+
 	int clients;
 	int fds[MAX_CLIENTS];
 	bool resume;
@@ -59,7 +76,58 @@ static void push(uint8_t *frame, size_t len)
 	s.latest = frame;
 	s.latest_len = len;
 	xSemaphoreGive(s.mu);
-	xTaskNotifyGive(s.task);
+	xTaskNotifyGive(s.encoder);
+}
+
+// encoder turns the newest frame into the panel's GIF whenever the sender
+// wants one. While a send is in progress it waits until just before it
+// should end, so the frame it takes is as new as possible.
+static void encoder(void *arg)
+{
+	for (;;) {
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		xSemaphoreTake(s.mu, portMAX_DELAY);
+		bool want = s.want && s.latest;
+		int64_t start_at = s.send_start_us ? s.send_start_us + s.send_us - s.encode_us - ENCODE_MARGIN_US : 0;
+		xSemaphoreGive(s.mu);
+		if (!want)
+			continue;
+		int64_t wait_us = start_at - esp_timer_get_time();
+		if (wait_us > 0)
+			vTaskDelay(pdMS_TO_TICKS(wait_us / 1000));
+
+		xSemaphoreTake(s.mu, portMAX_DELAY);
+		uint8_t *frame = s.latest;
+		size_t len = s.latest_len;
+		uint32_t gen = s.gen;
+		s.latest = NULL;
+		if (frame)
+			s.want = false;
+		xSemaphoreGive(s.mu);
+		if (!frame)
+			continue; // dropped by a disconnect meanwhile; wait for the next push
+
+		display_live_frame_t *f = NULL;
+		esp_err_t err = display_live_encode(frame, len, &f);
+		free(frame);
+		if (err != ESP_OK)
+			ESP_LOGW(TAG, "frame failed: %s", display_error_text(err));
+
+		xSemaphoreTake(s.mu, portMAX_DELAY);
+		if (f) {
+			s.encode_us = display_live_encode_us(f);
+			if (gen == s.gen) {
+				display_live_free(s.ready);
+				s.ready = f;
+				f = NULL;
+			}
+		} else {
+			s.want = true; // try the next frame
+		}
+		xSemaphoreGive(s.mu);
+		display_live_free(f);
+		xTaskNotifyGive(s.task);
+	}
 }
 
 static void expire(void *arg)
@@ -73,40 +141,52 @@ static void expire(void *arg)
 	xTaskNotifyGive(s.task);
 }
 
+// run sends encoded frames, at most one per interval, and the resume.
 static void run(void *arg)
 {
 	for (;;) {
 		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 		xSemaphoreTake(s.mu, portMAX_DELAY);
-		uint8_t *frame = s.latest;
-		size_t len = s.latest_len;
+		display_live_frame_t *f = s.ready;
 		bool resume = s.resume;
 		uint32_t interval = s.interval_ms;
-		s.latest = NULL;
+		s.ready = NULL;
 		s.resume = false;
+		if (resume) {
+			s.gen++;
+			s.want = false;
+		} else {
+			// Encode the next frame during this send (or now, when idle).
+			s.want = true;
+			s.send_start_us = f ? esp_timer_get_time() : 0;
+		}
 		xSemaphoreGive(s.mu);
 
 		if (resume) {
+			display_live_free(f);
 			display_set_streaming(false);
 			esp_err_t err = display_stream_resume();
 			if (err == ESP_OK)
 				ESP_LOGI(TAG, "stream ended, playlist resumed");
 			else
 				ESP_LOGW(TAG, "stream ended, resume failed: %s", display_error_text(err));
-			free(frame);
 			continue;
 		}
-		if (!frame)
+		xTaskNotifyGive(s.encoder);
+		if (!f)
 			continue;
 		int64_t start = esp_timer_get_time();
-		esp_err_t err = display_live_mem(frame, len);
-		free(frame);
+		esp_err_t err = display_live_send(f);
 		if (err != ESP_OK)
 			ESP_LOGW(TAG, "frame failed: %s", display_error_text(err));
-		int64_t spent_ms = (esp_timer_get_time() - start) / 1000;
-		if (spent_ms < interval)
-			vTaskDelay(pdMS_TO_TICKS(interval - spent_ms));
-		// A frame that arrived while sending is still waiting; pick it up.
+		int64_t spent_us = esp_timer_get_time() - start;
+		xSemaphoreTake(s.mu, portMAX_DELAY);
+		s.send_us = spent_us;
+		s.send_start_us = 0;
+		xSemaphoreGive(s.mu);
+		if (spent_us / 1000 < interval)
+			vTaskDelay(pdMS_TO_TICKS(interval - spent_us / 1000));
+		// A frame encoded while sending is waiting; pick it up.
 		xTaskNotifyGive(s.task);
 	}
 }
@@ -121,6 +201,7 @@ static void client_connect(int fd)
 			break;
 		}
 	s.resume = false;
+	s.want = true;
 	esp_timer_stop(s.pending);
 	xSemaphoreGive(s.mu);
 	display_set_streaming(true);
@@ -208,7 +289,8 @@ esp_err_t stream_register(httpd_handle_t hd)
 	s.interval_ms = fps_interval(settings_get()->stream_fps);
 	esp_timer_create_args_t t = {.callback = expire, .name = "stream_resume"};
 	if (!s.mu || esp_timer_create(&t, &s.pending) != ESP_OK ||
-	    xTaskCreate(run, "stream", 6144, NULL, 5, &s.task) != pdPASS)
+	    xTaskCreate(run, "stream", 4096, NULL, 5, &s.task) != pdPASS ||
+	    xTaskCreate(encoder, "stream_enc", 6144, NULL, 5, &s.encoder) != pdPASS)
 		return ESP_ERR_NO_MEM;
 	httpd_uri_t u = {.uri = "/stream",
 			 .method = HTTP_GET,

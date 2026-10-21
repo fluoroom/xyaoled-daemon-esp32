@@ -153,6 +153,7 @@ static void test_png(void)
 	check_fixture("png_small.png", "png_small", &panel, 0, 0);
 	// Alpha over black: Go rounds through 16-bit premultiplication.
 	check_fixture("png_rgba.png", "png_rgba", &panel, 1, 0.5);
+	check_fixture("png_panel.png", "png_panel", &panel, 0, 0);
 }
 
 static void test_jpeg(void)
@@ -415,7 +416,7 @@ static void test_passthrough(void)
 static void test_corrupt_inputs(void)
 {
 	// Truncations and random byte flips must fail cleanly (ASan watches).
-	const char *files[] = {FIX "anim_small.gif", FIX "anim_wide.gif", FIX "png_rgba.png", FIX "photo.jpg"};
+	const char *files[] = {FIX "anim_small.gif", FIX "anim_wide.gif", FIX "png_rgba.png", FIX "png_panel.png", FIX "photo.jpg"};
 	uint32_t seed = 42;
 	for (size_t f = 0; f < sizeof files / sizeof *files; f++) {
 		size_t len;
