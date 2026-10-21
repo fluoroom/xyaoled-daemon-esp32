@@ -1036,7 +1036,7 @@ esp_err_t http_start(void)
 	httpd_config_t c = HTTPD_DEFAULT_CONFIG();
 	c.server_port = settings_get()->http_port;
 	c.stack_size = 10240; // images are decoded in the handlers
-	c.max_uri_handlers = sizeof routes / sizeof *routes + 2;
+	c.max_uri_handlers = sizeof routes / sizeof *routes + 3; // + /stream, /api/stream/frame, one spare
 	c.uri_match_fn = httpd_uri_match_wildcard;
 	c.lru_purge_enable = true;
 	c.recv_wait_timeout = 20;

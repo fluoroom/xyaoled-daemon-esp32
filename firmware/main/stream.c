@@ -51,6 +51,8 @@ static struct {
 	bool resume;
 	uint32_t interval_ms;
 	unsigned colors; // ?colors= or the stream_colors setting
+	uint8_t *last_raw; // the last frame encoded, as received (GET /api/stream/frame)
+	size_t last_raw_len;
 } s;
 
 static uint32_t fps_interval(int fps)
@@ -123,7 +125,11 @@ static void encoder(void *arg)
 
 		display_live_frame_t *f = NULL;
 		esp_err_t err = display_live_encode(frame, len, colors, &f);
-		free(frame);
+		xSemaphoreTake(s.mu, portMAX_DELAY);
+		free(s.last_raw);
+		s.last_raw = frame;
+		s.last_raw_len = len;
+		xSemaphoreGive(s.mu);
 		if (err != ESP_OK)
 			ESP_LOGW(TAG, "frame failed: %s", display_error_text(err));
 
@@ -307,6 +313,26 @@ static esp_err_t ws_handler(httpd_req_t *req)
 	return ESP_OK;
 }
 
+// GET /api/stream/frame: the last stream frame as the client sent it, to
+// see what a browser really exports.
+static esp_err_t h_frame(httpd_req_t *req)
+{
+	xSemaphoreTake(s.mu, portMAX_DELAY);
+	uint8_t *copy = s.last_raw_len ? malloc(s.last_raw_len) : NULL;
+	size_t len = copy ? s.last_raw_len : 0;
+	if (copy)
+		memcpy(copy, s.last_raw, len);
+	xSemaphoreGive(s.mu);
+	if (!copy) {
+		httpd_resp_set_status(req, "404 Not Found");
+		return httpd_resp_sendstr(req, "No stream frame yet");
+	}
+	httpd_resp_set_type(req, "application/octet-stream");
+	esp_err_t err = httpd_resp_send(req, (const char *)copy, (ssize_t)len);
+	free(copy);
+	return err;
+}
+
 esp_err_t stream_register(httpd_handle_t hd)
 {
 	s.mu = xSemaphoreCreateMutex();
@@ -324,5 +350,7 @@ esp_err_t stream_register(httpd_handle_t hd)
 			 .handler = ws_handler,
 			 .is_websocket = true,
 			 .ws_post_handshake_cb = on_handshake};
-	return httpd_register_uri_handler(hd, &u);
+	esp_err_t err = httpd_register_uri_handler(hd, &u);
+	httpd_uri_t fr = {.uri = "/api/stream/frame", .method = HTTP_GET, .handler = h_frame};
+	return err == ESP_OK ? httpd_register_uri_handler(hd, &fr) : err;
 }

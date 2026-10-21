@@ -187,6 +187,60 @@ static int nearest(const uint8_t *pal, size_t n, int r, int g, int b)
 	return best;
 }
 
+// Colours this close on every channel count as one when choosing a
+// limited palette: a browser's anti-fingerprinting noise moves nearly
+// every pixel of a canvas by a few steps, splitting each colour drawn
+// into dozens of rarely used variants.
+#define GROUP_DIFF 16
+
+// group_palette picks at most n colours for pal (pal_len colours used
+// uses[] times): near colours are grouped, each group stands for its most
+// used colour, and the n most used groups are kept, in order of use.
+// remap gets, for each pal colour, the index of the nearest kept one.
+// Returns how many were kept.
+static size_t group_palette(const uint8_t *pal, size_t pal_len, const uint32_t *uses, size_t n, uint8_t *out,
+			    uint8_t *remap)
+{
+	uint8_t order[256]; // pal indices, most used first
+	for (size_t i = 0; i < pal_len; i++) {
+		size_t j = i;
+		for (; j > 0 && uses[order[j - 1]] < uses[i]; j--)
+			order[j] = order[j - 1];
+		order[j] = (uint8_t)i;
+	}
+	uint8_t rep[256];    // each group's most used colour
+	uint32_t total[256]; // pixels in each group
+	size_t groups = 0;
+	for (size_t k = 0; k < pal_len; k++) {
+		const uint8_t *c = pal + order[k] * 3;
+		size_t g = 0;
+		for (; g < groups; g++) {
+			const uint8_t *r = pal + rep[g] * 3;
+			if (abs(c[0] - r[0]) <= GROUP_DIFF && abs(c[1] - r[1]) <= GROUP_DIFF && abs(c[2] - r[2]) <= GROUP_DIFF)
+				break;
+		}
+		if (g == groups) {
+			rep[groups] = order[k];
+			total[groups++] = 0;
+		}
+		total[g] += uses[order[k]];
+	}
+	// The n largest groups, largest first (selection: few groups).
+	size_t kept = groups < n ? groups : n;
+	bool taken[256] = {0};
+	for (size_t k = 0; k < kept; k++) {
+		size_t best = groups;
+		for (size_t g = 0; g < groups; g++)
+			if (!taken[g] && (best == groups || total[g] > total[best]))
+				best = g;
+		taken[best] = true;
+		memcpy(out + k * 3, pal + rep[best] * 3, 3);
+	}
+	for (size_t i = 0; i < pal_len; i++)
+		remap[i] = (uint8_t)nearest(out, kept, pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]);
+	return kept;
+}
+
 static int clamp255(int v)
 {
 	return v < 0 ? 0 : v > 255 ? 255 : v;
@@ -257,8 +311,9 @@ img_err_t img_encode_gif_levels(img_frames_t *frames, const img_writer_t *w, uns
 	size_t pal_len = img_frames_palette(frames, &pal);
 	// Within the limit, keep the colours exact. Over it with 256 colours
 	// or fewer in all (a drawing, a logo, a canvas a browser added noise
-	// to): its most used colours, the rest mapped to the nearest of them
-	// without dithering. Over 256 (photos, video): a uniform cube.
+	// to): its most used colours, near ones grouped (group_palette), the
+	// rest mapped to the nearest without dithering. Over 256 (photos,
+	// video): a uniform cube.
 	uint8_t cube[IMG_MAX_LEVELS * IMG_MAX_LEVELS * IMG_MAX_LEVELS * 3];
 	uint8_t *remap = NULL; // palette index -> index into pal, for the most-used palette
 	if (levels > IMG_MAX_LEVELS)
@@ -275,27 +330,7 @@ img_err_t img_encode_gif_levels(img_frames_t *frames, const img_writer_t *w, uns
 		size_t n = levels * levels * levels;
 		if (!(remap = malloc(256)))
 			return IMG_ERR_NOMEM;
-		// Pick the n most used, in palette order (selection: n and the
-		// palette are small).
-		bool chosen[256] = {0};
-		for (size_t k = 0; k < n; k++) {
-			size_t best = 0;
-			bool any = false;
-			for (size_t i = 0; i < pal_len; i++)
-				if (!chosen[i] && (!any || uses[i] > uses[best])) {
-					best = i;
-					any = true;
-				}
-			chosen[best] = true;
-		}
-		uint8_t *c = cube;
-		for (size_t i = 0; i < pal_len; i++)
-			if (chosen[i]) {
-				memcpy(c, pal + i * 3, 3);
-				c += 3;
-			}
-		for (size_t i = 0; i < pal_len; i++)
-			remap[i] = (uint8_t)nearest(cube, n, pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]);
+		n = group_palette(pal, pal_len, uses, n, cube, remap);
 		pal = cube;
 		pal_len = n;
 		levels = 0;
