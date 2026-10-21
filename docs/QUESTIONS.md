@@ -5,7 +5,7 @@ defecto; respondé debajo de **Respuesta:** (alcanza con "ok" si te parece
 bien) y lo ajusto.
 
 Estado general al dejar esto: todo el firmware está escrito y compila. La
-lógica pura (protocolo, subidas con acks, imágenes, parsers HTTP) pasa 30
+lógica pura (protocolo, subidas con acks, imágenes, parsers HTTP) pasa 31
 tests en la PC, y el firmware completo corre en QEMU (con un panel
 simulado en lugar de BLE y Ethernet en lugar de Wi-Fi) y pasa 16 pruebas
 de integración contra la API real; los GIFs que recibe el panel coinciden

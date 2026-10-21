@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "captive_dns.h"
 #include "jsonb64.h"
 #include "multipart.h"
 #include "test.h"
@@ -206,8 +207,81 @@ static void test_jsonb64(void)
 	free(out);
 }
 
+// A DNS query for name with qtype, id 0x1234, recursion desired.
+static size_t dns_query(uint8_t *b, const char *name, uint16_t qtype)
+{
+	uint8_t h[12] = {0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0};
+	memcpy(b, h, 12);
+	size_t p = 12;
+	for (const char *l = name; *l;) {
+		const char *dot = strchr(l, '.');
+		size_t n = dot ? (size_t)(dot - l) : strlen(l);
+		b[p++] = (uint8_t)n;
+		memcpy(b + p, l, n);
+		p += n;
+		l += n + (dot ? 1 : 0);
+	}
+	b[p++] = 0;
+	b[p++] = (uint8_t)(qtype >> 8);
+	b[p++] = (uint8_t)qtype;
+	b[p++] = 0;
+	b[p++] = 1;
+	return p;
+}
+
+static void test_captive_dns(void)
+{
+	const uint8_t ip[4] = {192, 168, 4, 1};
+	uint8_t b[512];
+	size_t q = dns_query(b, "connectivitycheck.gstatic.com", 1);
+	size_t n = captive_dns_answer(b, q, sizeof b, ip);
+	CHECK(n == q + 16, "A answer length %zu", n);
+	CHECK(b[0] == 0x12 && b[1] == 0x34 && b[2] == 0x85 && b[3] == 0x00, "header %02x %02x", b[2], b[3]);
+	CHECK(b[5] == 1 && b[7] == 1 && b[9] == 0 && b[11] == 0, "counts");
+	CHECK(b[q] == 0xc0 && b[q + 1] == 0x0c && b[q + 3] == 1 && b[q + 11] == 4 && memcmp(b + q + 12, ip, 4) == 0,
+	      "answer record");
+
+	q = dns_query(b, "example.com", 28); // AAAA: no records, but an answer
+	n = captive_dns_answer(b, q, sizeof b, ip);
+	CHECK(n == q && b[7] == 0 && (b[2] & 0x80), "AAAA answered empty");
+
+	q = dns_query(b, "a.b", 1);
+	b[5] = 2; // two questions
+	CHECK(captive_dns_answer(b, q, sizeof b, ip) == 0, "two questions");
+	q = dns_query(b, "a.b", 1);
+	b[2] |= 0x80; // a response
+	CHECK(captive_dns_answer(b, q, sizeof b, ip) == 0, "response answered");
+	q = dns_query(b, "a.b", 1);
+	CHECK(captive_dns_answer(b, q - 3, sizeof b, ip) == 0, "truncated question");
+	CHECK(captive_dns_answer(b, 11, sizeof b, ip) == 0, "short header");
+	q = dns_query(b, "a.b", 1);
+	b[12] = 0xc0; // compression pointer in the question
+	CHECK(captive_dns_answer(b, q, sizeof b, ip) == 0, "compressed question");
+	q = dns_query(b, "a.b", 1);
+	CHECK(captive_dns_answer(b, q, q + 10, ip) == q && b[7] == 0, "no room for the answer");
+
+	// Random packets never read or write out of bounds (ASan).
+	uint32_t seed = 7;
+	for (int i = 0; i < 20000; i++) {
+		uint8_t r[80];
+		size_t len = 1 + i % sizeof r;
+		for (size_t k = 0; k < len; k++) {
+			seed = seed * 1103515245 + 12345;
+			r[k] = (uint8_t)(seed >> 16);
+		}
+		r[2] &= 0x07;
+		if (len > 5)
+			r[4] = 0, r[5] = 1;
+		uint8_t *heap = malloc(len);
+		memcpy(heap, r, len);
+		captive_dns_answer(heap, len, len, ip);
+		free(heap);
+	}
+}
+
 int main(void)
 {
-	static const struct test_case cases[] = {TEST(test_boundary), TEST(test_multipart), TEST(test_jsonb64)};
+	static const struct test_case cases[] = {TEST(test_boundary), TEST(test_multipart), TEST(test_jsonb64),
+						    TEST(test_captive_dns)};
 	return run_tests("httputil", cases, sizeof cases / sizeof cases[0]) != 0;
 }

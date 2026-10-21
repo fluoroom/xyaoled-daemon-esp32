@@ -352,7 +352,8 @@ Same paths, form fields and status codes as the Go daemon.
 #### Wi-Fi setup portal
 
 - [ ] 🔨 No credentials in NVS: open the AP `xyaoled-setup`, WPA2, password `xyaoledaemon`
-- [ ] 🔨 DNS server answering every name with 192.168.4.1; port 80 redirects to `/config`, so phones and laptops open the page by themselves (captive portal)
+- [ ] 🔨 Port 80 redirects to `/config`, so phones and laptops open the page by themselves (captive portal), also when the AP opens before the HTTP server (first boot)
+- [ ] 🧪 DNS server answering every A query with 192.168.4.1 (malformed packets fuzzed)
 - [ ] 🔨 `/config` lists the networks the ESP sees (scan in APSTA mode)
 - [ ] 🔨 Connection attempt keeps the AP up; the page shows the result (IP and `xyaoled.local`, or wrong password / network not found / timed out) and allows retrying
 - [ ] 🔨 The page survives the AP switching channel to match the router (single radio): it keeps polling through errors

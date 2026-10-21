@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "captive_dns.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -65,30 +66,10 @@ static void dns_task(void *arg)
 		int n = recvfrom(w.dns_sock, buf, sizeof buf, 0, (struct sockaddr *)&from, &fl);
 		if (n < 0)
 			break; // socket closed: the portal is gone
-		if (n < 12 || (buf[2] & 0x80))
+		static const uint8_t ip[4] = {192, 168, 4, 1};
+		size_t len = captive_dns_answer(buf, (size_t)n, sizeof buf, ip);
+		if (len == 0)
 			continue;
-		uint16_t qd = (uint16_t)(buf[4] << 8 | buf[5]);
-		// Find the end of the first question.
-		int p = 12;
-		while (p < n && buf[p])
-			p += buf[p] + 1;
-		p += 5; // zero label, type, class
-		if (qd != 1 || p > n)
-			continue;
-		uint16_t qtype = (uint16_t)(buf[p - 4] << 8 | buf[p - 3]);
-		buf[2] = 0x84 | (buf[2] & 0x01); // response, authoritative, keep RD
-		buf[3] = 0x00;
-		buf[6] = buf[7] = buf[8] = buf[9] = buf[10] = buf[11] = 0;
-		int len = p;
-		if ((qtype == 1 || qtype == 255) && len + 16 <= (int)sizeof buf) {
-			buf[7] = 1;
-			static const uint8_t answer[12] = {0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4};
-			memcpy(buf + len, answer, sizeof answer);
-			len += sizeof answer;
-			uint8_t ip[4] = {192, 168, 4, 1};
-			memcpy(buf + len, ip, 4);
-			len += 4;
-		}
 		sendto(w.dns_sock, buf, len, 0, (struct sockaddr *)&from, fl);
 	}
 	w.dns_task = NULL;
