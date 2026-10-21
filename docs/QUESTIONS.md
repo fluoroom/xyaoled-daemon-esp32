@@ -172,6 +172,10 @@ ok
 
 ## Para la primera prueba en la placa
 
+**21/10/2026:** probado en la placa con el panel: anda, el stream da
+~3 fps (con 4 configurados). El test de passthrough (paso 5) queda para
+más adelante; mientras tanto `passthrough_partial` sigue apagado.
+
 Cuando estés en `uucp` (`sudo usermod -aG uucp $USER` y volver a
 iniciar sesión), el orden que propongo:
 
