@@ -8,6 +8,7 @@ API of the original Go daemon.
 |---|---|
 | [`firmware/`](firmware) | ESP-IDF firmware, in C |
 | [`docs/ESP32_PORT.md`](docs/ESP32_PORT.md) | Port plan, setup and feature checklist |
+| [`docs/QUESTIONS.md`](docs/QUESTIONS.md) | Open decisions for the owner |
 | [`reference/go-daemon/xyaoled/README.md`](reference/go-daemon/xyaoled/README.md) | Reverse-engineered panel protocol |
 | [`reference/go-daemon/`](reference/go-daemon) | Original Linux daemon in Go, kept as the reference (git submodule of [fluoroom/xyaoled-daemon](https://github.com/fluoroom/xyaoled-daemon)) |
 
@@ -23,8 +24,13 @@ cd firmware
 idf.py build flash monitor
 ```
 
-See [docs/ESP32_PORT.md](docs/ESP32_PORT.md#setup) for the toolchain and
-serial-port setup.
+Host tests, no board needed: `make -C firmware/test/host`.
+
+See [docs/ESP32_PORT.md](docs/ESP32_PORT.md#setup) for the toolchain,
+serial-port setup and first boot (Wi-Fi setup portal).
+
+Status: the whole daemon is ported and builds; the hardware-independent
+parts pass the host tests; nothing has run on the board yet.
 
 ## Credits
 
