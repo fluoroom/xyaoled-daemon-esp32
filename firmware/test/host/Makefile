@@ -9,8 +9,8 @@ CFLAGS := -std=c17 -D_GNU_SOURCE -O1 -g -Wall -Wextra -Werror -fsanitize=address
 # UBSan stays off for them: miniz loads unaligned on x86 by design, TJpgDec's
 # IDCT relies on wrapping int arithmetic.
 VENDOR_CFLAGS := -std=gnu17 -O1 -g -fsanitize=address -w -DPNGLE_NO_GAMMA_CORRECTION
-GO := GOCACHE=$(CURDIR)/$(BUILD)/gocache GOPROXY=off GOTOOLCHAIN=local go
 BUILD := build
+GO := GOCACHE=$(CURDIR)/$(BUILD)/gocache GOPROXY=off GOTOOLCHAIN=local go
 
 TESTS := proto upload imaging httputil
 IMAGING := $(wildcard $(COMP)/imaging/*.c)
