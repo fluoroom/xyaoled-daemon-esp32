@@ -151,13 +151,125 @@ async function call(label, url, init){
   }
 }
 
+// ---- Shrinking big files in the browser (ESP32 firmware) ------------------
+// Over SHRINK_OVER bytes, a file is fitted to the panel here before upload,
+// as the firmware would (contain, centred on black, nearest neighbour), so
+// the chip doesn't decode a large image: stills as PNG, animated GIFs as a
+// panel-sized GIF (needs ImageDecoder; otherwise the file goes as it is).
+const SHRINK_OVER = 100 << 10;
+let panelW = 96, panelH = 16;
+fetch('/health').then(r => r.json()).then(j => { panelW = j.config?.width || panelW; panelH = j.config?.height || panelH; }).catch(() => {});
+
+function fitCanvas(src, w, h){
+  const c = document.createElement('canvas');
+  c.width = panelW; c.height = panelH;
+  const ctx = c.getContext('2d', {willReadFrequently: true});
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, panelW, panelH);
+  const scale = Math.min(panelW / w, panelH / h);
+  const nw = Math.max(1, Math.floor(w * scale)), nh = Math.max(1, Math.floor(h * scale));
+  ctx.drawImage(src, Math.floor((panelW - nw) / 2), Math.floor((panelH - nh) / 2), nw, nh);
+  return c;
+}
+
+async function shrinkStill(file){
+  const bmp = await createImageBitmap(file);
+  const c = fitCanvas(bmp, bmp.width, bmp.height);
+  bmp.close();
+  const blob = await new Promise(res => c.toBlob(res, 'image/png'));
+  return new File([blob], file.name.replace(/\.\w+$/, '') + '.png', {type: 'image/png'});
+}
+
+// Minimal GIF89a encoder: one local colour table per frame (the firmware
+// re-encodes anyway), loops forever.
+function gifEncode(frames, w, h){
+  const out = [];
+  const u16 = v => out.push(v & 255, v >> 8);
+  out.push(...'GIF89a'.split('').map(c => c.charCodeAt(0)));
+  u16(w); u16(h); out.push(0, 0, 0);
+  out.push(0x21, 0xff, 11, ...'NETSCAPE2.0'.split('').map(c => c.charCodeAt(0)), 3, 1, 0, 0, 0);
+  for (const {rgba, delay} of frames) {
+    // Palette: the frame's colours; over 256, 3-3-2 bits per channel.
+    let key = i => rgba[i] << 16 | rgba[i + 1] << 8 | rgba[i + 2];
+    let map = new Map();
+    for (let i = 0; i < rgba.length && map.size <= 256; i += 4) if (!map.has(key(i))) map.set(key(i), map.size);
+    if (map.size > 256) {
+      key = i => (rgba[i] & 0xe0) << 16 | (rgba[i + 1] & 0xe0) << 8 | (rgba[i + 2] & 0xc0);
+      map = new Map();
+      for (let i = 0; i < rgba.length; i += 4) if (!map.has(key(i))) map.set(key(i), map.size);
+    }
+    let bits = 1;
+    while ((1 << bits) < map.size) bits++;
+    const idx = new Uint8Array(w * h);
+    for (let p = 0; p < w * h; p++) idx[p] = map.get(key(p * 4));
+    out.push(0x21, 0xf9, 4, 0); u16(delay); out.push(0, 0);
+    out.push(0x2c); u16(0); u16(0); u16(w); u16(h); out.push(0x80 | (bits - 1));
+    const table = new Array((1 << bits) * 3).fill(0);
+    for (const [c, i] of map) table.splice(i * 3, 3, c >> 16 & 255, c >> 8 & 255, c & 255);
+    out.push(...table);
+    // LZW
+    const min = Math.max(2, bits), clear = 1 << min, eoi = clear + 1;
+    let size = min + 1, next = eoi + 1, dict = new Map(), acc = 0, n = 0, block = [];
+    const emit = code => {
+      acc |= code << n; n += size;
+      while (n >= 8) { block.push(acc & 255); acc >>= 8; n -= 8; if (block.length === 255) { out.push(255, ...block); block = []; } }
+    };
+    out.push(min);
+    emit(clear);
+    let cur = idx[0];
+    for (let p = 1; p < idx.length; p++) {
+      const k = cur * 256 + idx[p];
+      if (dict.has(k)) { cur = dict.get(k); continue; }
+      emit(cur);
+      if (next < 4096) { dict.set(k, next++); if (next > (1 << size) && size < 12) size++; }
+      else { emit(clear); dict = new Map(); size = min + 1; next = eoi + 1; }
+      cur = idx[p];
+    }
+    emit(cur); emit(eoi);
+    if (n > 0) block.push(acc & 255);
+    if (block.length) out.push(block.length, ...block);
+    out.push(0);
+  }
+  out.push(0x3b);
+  return new Uint8Array(out);
+}
+
+async function shrinkGif(file){
+  if (typeof ImageDecoder === 'undefined') return null;
+  const dec = new ImageDecoder({data: await file.arrayBuffer(), type: 'image/gif'});
+  await dec.tracks.ready;
+  const count = dec.tracks.selectedTrack.frameCount, frames = [];
+  for (let i = 0; i < count; i++) {
+    const {image} = await dec.decode({frameIndex: i});
+    const c = fitCanvas(image, image.displayWidth, image.displayHeight);
+    frames.push({rgba: c.getContext('2d').getImageData(0, 0, panelW, panelH).data, delay: Math.round((image.duration || 0) / 10000)});
+    image.close();
+  }
+  dec.close();
+  return new File([gifEncode(frames, panelW, panelH)], file.name, {type: 'image/gif'});
+}
+
+async function maybeShrink(file, animated){
+  if (file.size <= SHRINK_OVER) return file;
+  try {
+    const small = animated ? await shrinkGif(file) : await shrinkStill(file);
+    if (!small) { log(`${file.name}: ${(file.size / 1024).toFixed(0)} KB, sent as is (no ImageDecoder in this browser)`); return file; }
+    log(`${file.name}: shrunk in the browser to ${panelW}×${panelH}, ${(file.size / 1024).toFixed(0)} KB → ${(small.size / 1024).toFixed(1)} KB`, 'ok');
+    return small;
+  } catch (e) {
+    log(`${file.name}: could not shrink (${e.message}), sent as is`, 'err');
+    return file;
+  }
+}
+
 // Commands go through POST /uploadTest; files are attached when the button names one.
-document.querySelectorAll('button[data-cmd]').forEach(b => b.onclick = () => {
+document.querySelectorAll('button[data-cmd]').forEach(b => b.onclick = async () => {
   const form = new FormData();
   form.append('command', b.dataset.cmd);
   if (b.dataset.file) {
-    const file = $(b.dataset.file).files[0];
+    let file = $(b.dataset.file).files[0];
     if (!file) { log(`${b.dataset.cmd} → choose a file first`, 'err'); return; }
+    file = await maybeShrink(file, b.dataset.cmd.startsWith('send_animated'));
     form.append(b.dataset.field, file);
   }
   call(b.dataset.cmd, '/uploadTest', {method:'POST', body:form});
