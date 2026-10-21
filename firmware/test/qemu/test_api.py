@@ -189,6 +189,16 @@ def test_passthrough():
     check(last()[0] != fixture('pass_ok.gif'), 'passthrough off but GIF sent as is')
     post_json('/api/config', {'passthrough': True})
 
+    src = fixture('pt_dispose.gif')
+    multipart('/upload', [('file', src, 'd.gif')])
+    check(last()[0] != src, 'partial frames passed through by default')
+    post_json('/api/config', {'passthrough_partial': True})
+    multipart('/upload', [('file', src, 'd.gif')])
+    gif, tr, _ = last()
+    check(gif == src, 'passthrough_partial on but partial frames re-encoded')
+    check(tr == trailer(False, 7, 2000), f'partial passthrough trailer {tr}')
+    post_json('/api/config', {'passthrough_partial': False})
+
 
 def test_display_json():
     img = base64.b64encode(fixture('photo.jpg')).decode()

@@ -265,8 +265,9 @@ static esp_err_t encode(const img_reader_t *r, display_kind_t kind, const char *
 		bool ok = fclose(p.tee) == 0 && !p.tee_error;
 		p.tee = NULL;
 		const char *why = "not a valid GIF";
-		if (ok && serr == IMG_OK && img_gif_passthrough(&scan, &t, &why)) {
-			ESP_LOGI(TAG, "passthrough: %u frames, %u ms", (unsigned)scan.frames, (unsigned)scan.total_ms);
+		if (ok && serr == IMG_OK && img_gif_passthrough(&scan, &t, s->passthrough_partial, &why)) {
+			ESP_LOGI(TAG, "passthrough: %u frames, %u ms%s%s", (unsigned)scan.frames, (unsigned)scan.total_ms,
+				 scan.partial_frame ? ", partial frames" : "", scan.transparency ? ", transparency" : "");
 			rename(IN_PATH, out->path);
 			FILE *f = fopen(out->path, "rb");
 			long size = -1;

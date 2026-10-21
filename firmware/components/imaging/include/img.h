@@ -116,5 +116,7 @@ typedef struct {
 img_err_t img_gif_scan(const img_reader_t *r, img_gif_scan_t *scan);
 
 // img_gif_passthrough reports whether a scanned GIF can be sent as it is,
-// and if not, why (a static string).
-bool img_gif_passthrough(const img_gif_scan_t *scan, const img_target_t *target, const char **why);
+// and if not, why (a static string). allow_partial lets partial and
+// transparent frames through, to try the panel's decoder on them.
+bool img_gif_passthrough(const img_gif_scan_t *scan, const img_target_t *target, bool allow_partial,
+			 const char **why);

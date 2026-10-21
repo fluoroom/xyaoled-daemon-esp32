@@ -268,6 +268,13 @@ func gen(dir string) error {
 		}
 	}
 
+	// For trying passthrough_partial on the panel (test/panel): animations
+	// the conservative check refuses, and a solid still to send before
+	// them, so whatever shows through transparent pixels is visible.
+	if err := panelGifs(dir); err != nil {
+		return err
+	}
+
 	// Stills: an RGBA PNG with alpha and more than 256 colours, a tiny
 	// paletted PNG (upscaled), and a baseline JPEG.
 	rgba := image.NewNRGBA(image.Rect(0, 0, 200, 50))
@@ -331,6 +338,77 @@ func gen(dir string) error {
 
 // longAnim writes an n-frame animation of full frames and its expected
 // panel frames.
+// panelGifs writes pt_solid.png (solid blue) and three panel-sized
+// animations, each looping every 2 s:
+//
+//	pt_transparent  two full frames; the left half is transparent, the right
+//	                half alternates green and red
+//	pt_partial      a full yellow frame, then a 16×16 red square stepping
+//	                right in partial frames that are not disposed (a trail)
+//	pt_dispose      the same with background disposal (no trail)
+func panelGifs(dir string) error {
+	full := image.Rect(0, 0, panelW, panelH)
+	clear := color.RGBA{}
+	green, red := color.RGBA{0, 255, 0, 255}, color.RGBA{255, 0, 0, 255}
+	yellow := color.RGBA{255, 255, 0, 255}
+
+	solid := image.NewRGBA(full)
+	for i := 0; i < len(solid.Pix); i += 4 {
+		solid.Pix[i+2], solid.Pix[i+3] = 255, 255
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, solid); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pt_solid.png"), buf.Bytes(), 0o644); err != nil {
+		return err
+	}
+
+	pal := color.Palette{clear, green, red}
+	tr := &gif.GIF{Config: image.Config{ColorModel: pal, Width: panelW, Height: panelH}}
+	for i := uint8(1); i <= 2; i++ {
+		f := image.NewPaletted(full, pal)
+		for y := 0; y < panelH; y++ {
+			for x := panelW / 2; x < panelW; x++ {
+				f.SetColorIndex(x, y, i)
+			}
+		}
+		tr.Image = append(tr.Image, f)
+		tr.Delay = append(tr.Delay, 100)
+	}
+
+	pal = color.Palette{yellow, red}
+	moving := func(disposal byte) *gif.GIF {
+		g := &gif.GIF{Config: image.Config{ColorModel: pal, Width: panelW, Height: panelH}}
+		g.Image = append(g.Image, image.NewPaletted(full, pal)) // all yellow
+		g.Delay = append(g.Delay, 50)
+		g.Disposal = append(g.Disposal, gif.DisposalNone)
+		for x := 0; x < panelW; x += 16 {
+			sq := image.NewPaletted(image.Rect(x, 0, x+16, panelH), pal)
+			for i := range sq.Pix {
+				sq.Pix[i] = 1
+			}
+			g.Image = append(g.Image, sq)
+			g.Delay = append(g.Delay, 25)
+			g.Disposal = append(g.Disposal, disposal)
+		}
+		return g
+	}
+
+	for name, g := range map[string]*gif.GIF{
+		"pt_transparent": tr, "pt_partial": moving(gif.DisposalNone), "pt_dispose": moving(gif.DisposalBackground),
+	} {
+		data, err := encodeGif(g)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".gif"), data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func longAnim(args []string) error {
 	if len(args) != 4 {
 		return fmt.Errorf("anim <w> <h> <n> <out>")

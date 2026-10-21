@@ -72,6 +72,7 @@ static const field_t fields[] = {
 	 false, valid_mac},
 	F("upside_down", T_BOOL, upside_down, 0, 1, 0),
 	F("passthrough", T_BOOL, passthrough, 0, 1, 0),
+	F("passthrough_partial", T_BOOL, passthrough_partial, 0, 1, 0),
 	F("stream_fps", T_U8, stream_fps, 1, 5, 0),
 	F("stream_resume_delay", T_SECONDS, stream_resume_ms, 0, 60000, 0),
 	F("debug_ble", T_BOOL, debug_ble, 0, 1, 0),

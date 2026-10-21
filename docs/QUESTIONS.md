@@ -183,9 +183,13 @@ iniciar sesión), el orden que propongo:
    panel`, tamaño y brillo).
 4. `/test`: brillo, una imagen fija, un GIF animado, el stream de la
    webcam.
-5. Medir cuánto tarda en subir un GIF grande y cuántos fps da el stream,
+5. `firmware/test/panel/passthrough.sh` (pregunta 2): activa
+   `passthrough_partial`, manda un azul sólido y después cada GIF de
+   prueba, y te pregunta qué ves. Si todo sale bien, dejo el chequeo
+   desactivado por defecto; si no, queda como está.
+6. Medir cuánto tarda en subir un GIF grande y cuántos fps da el stream,
    comparado con el daemon Go (~7 fps).
-6. Recorrer `/config` en el navegador: estado, escaneo de redes, guardar
+7. Recorrer `/config` en el navegador: estado, escaneo de redes, guardar
    ajustes, exportar e importar. Su API pasó los tests en QEMU, pero la
    interfaz en sí (el JavaScript de la página) nunca corrió en un
    navegador: para eso tendría que haber abierto Chrome o Firefox, que

@@ -269,7 +269,9 @@ are pure C and host-tested; `xy_panel` is the NimBLE side.
   - [ ] 🧪 two frames or more (a single frame goes the still path)
   - [ ] 🧪 no frame has a local colour table (the panel's decoder loses sync on them)
   - [ ] 🧪 no frame has a zero delay
-  - [ ] 🧪 every frame covers the whole screen and has no transparency (see QUESTIONS.md)
+  - [ ] 🧪 every frame covers the whole screen and has no transparency (see QUESTIONS.md),
+        unless `passthrough_partial` is on (experimental, default off)
+  - [ ] 🔨 the panel draws partial and transparent frames right: `firmware/test/panel/passthrough.sh`
   - [ ] 🖥️ passthrough enabled in the config
   - [ ] 🔨 the log says which path an upload took, and why passthrough was refused
 - [x] Go image tests (`display_test.go`) covered: still held 600 s, animation delays and loop, by the fixture tests

@@ -388,16 +388,26 @@ static void test_passthrough(void)
 	CHECK(scan_file(FIX "pass_ok.gif", &s) == IMG_OK, "scan pass_ok");
 	CHECK(s.frames == 3 && s.total_ms == 120 && s.width == 96 && s.height == 16, "%u frames %u ms", s.frames,
 	      s.total_ms);
-	CHECK(img_gif_passthrough(&s, &panel, &why), "pass_ok refused: %s", why);
+	CHECK(img_gif_passthrough(&s, &panel, false, &why), "pass_ok refused: %s", why);
 	img_target_t flipped = {96, 16, true};
-	CHECK(!img_gif_passthrough(&s, &flipped, &why), "upside down passes");
+	CHECK(!img_gif_passthrough(&s, &flipped, false, &why), "upside down passes");
 
 	CHECK(scan_file(FIX "pass_lct.gif", &s) == IMG_OK, "scan pass_lct");
-	CHECK(s.local_color_table && !img_gif_passthrough(&s, &panel, &why), "local colour tables pass");
+	CHECK(s.local_color_table && !img_gif_passthrough(&s, &panel, false, &why), "local colour tables pass");
 
 	CHECK(scan_file(FIX "anim_small.gif", &s) == IMG_OK, "scan anim_small");
 	CHECK(s.frames == 4 && s.zero_delay && s.partial_frame && s.transparency, "anim_small flags");
-	CHECK(!img_gif_passthrough(&s, &panel, &why) && strstr(why, "size"), "anim_small: %s", why);
+	CHECK(!img_gif_passthrough(&s, &panel, false, &why) && strstr(why, "size"), "anim_small: %s", why);
+
+	// The panel experiments: refused by default, passed with allow_partial.
+	CHECK(scan_file(FIX "pt_transparent.gif", &s) == IMG_OK, "scan pt_transparent");
+	CHECK(s.frames == 2 && s.total_ms == 2000 && s.transparency && !s.partial_frame, "pt_transparent flags");
+	CHECK(!img_gif_passthrough(&s, &panel, false, &why) && strstr(why, "transparency"), "pt_transparent: %s", why);
+	CHECK(img_gif_passthrough(&s, &panel, true, &why), "pt_transparent refused: %s", why);
+	CHECK(scan_file(FIX "pt_dispose.gif", &s) == IMG_OK, "scan pt_dispose");
+	CHECK(s.frames == 7 && s.total_ms == 2000 && s.partial_frame, "pt_dispose flags");
+	CHECK(!img_gif_passthrough(&s, &panel, false, &why) && strstr(why, "cover"), "pt_dispose: %s", why);
+	CHECK(img_gif_passthrough(&s, &panel, true, &why), "pt_dispose refused: %s", why);
 
 	CHECK(scan_file(FIX "png_small.png", &s) == IMG_ERR_FORMAT, "png scanned as gif");
 }

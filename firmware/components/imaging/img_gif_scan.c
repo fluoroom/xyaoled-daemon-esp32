@@ -93,7 +93,7 @@ img_err_t img_gif_scan(const img_reader_t *r, img_gif_scan_t *s)
 	return err;
 }
 
-bool img_gif_passthrough(const img_gif_scan_t *s, const img_target_t *t, const char **why)
+bool img_gif_passthrough(const img_gif_scan_t *s, const img_target_t *t, bool allow_partial, const char **why)
 {
 	const char *reason = NULL;
 	if (s->width != t->width || s->height != t->height)
@@ -106,9 +106,9 @@ bool img_gif_passthrough(const img_gif_scan_t *s, const img_target_t *t, const c
 		reason = "a frame has a local colour table";
 	else if (s->zero_delay)
 		reason = "a frame has no delay";
-	else if (s->partial_frame)
+	else if (s->partial_frame && !allow_partial)
 		reason = "a frame does not cover the whole screen";
-	else if (s->transparency)
+	else if (s->transparency && !allow_partial)
 		reason = "a frame has transparency";
 	if (why)
 		*why = reason;

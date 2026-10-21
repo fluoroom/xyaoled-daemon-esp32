@@ -22,6 +22,7 @@ typedef struct {
 	char panel_mac[18]; // "AA:BB:CC:DD:EE:FF"
 	bool upside_down;
 	bool passthrough;
+	bool passthrough_partial; // experimental: pass partial/transparent frames
 	uint8_t stream_fps;
 	uint16_t stream_resume_ms;
 	bool debug_ble;
