@@ -24,7 +24,7 @@ pushear, pero eso fue para aquel cambio.
 **Por defecto:** quedan locales hasta que digas.
 
 **Respuesta:**
-
+si, commitea este intento inicial antes de seguir
 ---
 
 ### 2. Passthrough: ¿frames parciales y transparencia?
@@ -46,7 +46,7 @@ desactivo ese chequeo, subo un GIF optimizado de 96×16 y vemos si se ve
 bien.
 
 **Respuesta:**
-
+dale, hace la prueba, pero antes subi otro color solido a ver si aparece abajo por transparencia. (ahora, no test en placa, porque esto es con el panel)
 ---
 
 ### 3. `/display` con `"type"` después de `"image"`
@@ -62,7 +62,7 @@ solo, así que no lo afecta.
 **Por defecto:** así como está.
 
 **Respuesta:**
-
+esta bien, adaptá la web de test a este cambio también
 ---
 
 ### 4. GIF de un solo frame con `type: "animated"`
@@ -75,7 +75,7 @@ hace Go con `type: "static"` o vacío.
 **Por defecto:** imagen fija.
 
 **Respuesta:**
-
+ok
 ---
 
 ### 5. El servidor HTTP atiende un pedido a la vez
@@ -91,7 +91,7 @@ porque el panel acepta un upload por vez.
 **Por defecto:** una tarea; lo agrego si molesta en la práctica.
 
 **Respuesta:**
-
+ok
 ---
 
 ### 6. Límites que no tenía el daemon Go
@@ -107,7 +107,7 @@ porque el panel acepta un upload por vez.
 **Por defecto:** esos valores.
 
 **Respuesta:**
-
+ok
 ---
 
 ### 7. ¿Conecto por MAC a tu panel?
@@ -120,7 +120,7 @@ MAC. Si tenés un solo panel, por nombre alcanza.
 **Por defecto:** por nombre, `XYAO`.
 
 **Respuesta:**
-
+ok
 ---
 
 ### 8. `/config` sin contraseña
@@ -133,7 +133,7 @@ tampoco tenía autenticación en su API. Se podría proteger `/config` y
 **Por defecto:** sin clave.
 
 **Respuesta:**
-
+sin clave
 ---
 
 ### 9. RAM: código de Wi-Fi fuera de IRAM
@@ -148,7 +148,7 @@ notarse: lo que limita la velocidad de subida es el ack BLE del panel.
 `firmware/sdkconfig.defaults`.
 
 **Respuesta:**
-
+ok
 ---
 
 ### 10. Credenciales Wi-Fi para desarrollo
@@ -167,7 +167,7 @@ y borrar `firmware/sdkconfig` antes de compilar. Lo guardado desde
 **Por defecto:** no creé el archivo; necesito tus datos o lo creás vos.
 
 **Respuesta:**
-
+ok
 ---
 
 ## Para la primera prueba en la placa
