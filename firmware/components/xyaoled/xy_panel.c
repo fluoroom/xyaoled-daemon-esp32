@@ -1,6 +1,7 @@
 #include "xy_panel.h"
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -50,10 +51,8 @@ static struct {
 
 	const xy_panel_config_t *scan_cfg;
 
-	uint8_t seq;
+	xy_session_t session;
 	uint8_t brightness;
-	uint8_t last_ack_ctr;
-	bool have_last_ack_ctr;
 	xy_panel_info_t info;
 	bool have_info;
 	bool debug;
@@ -61,25 +60,8 @@ static struct {
 
 const char *xy_err_name(esp_err_t err)
 {
-	switch (err) {
-	case XY_ERR_NOT_CONNECTED:
-		return "device not connected";
-	case XY_ERR_NOT_FOUND:
-		return "scan timeout: no XYAOLED device found";
-	case XY_ERR_HANDSHAKE:
-		return "panel rejected the handshake";
-	case XY_ERR_BUSY:
-		return "panel busy: program select not acknowledged";
-	case XY_ERR_NO_ACK:
-		return "no ack from device";
-	case XY_ERR_REJECTED:
-		return "device rejected a packet";
-	case XY_ERR_NOT_READY:
-		return "panel is not accepting data";
-	case XY_ERR_GATT:
-		return "panel service or characteristics not found";
-	}
-	return esp_err_to_name(err);
+	const char *t = xy_err_text(err);
+	return t ? t : esp_err_to_name(err);
 }
 
 static uint32_t now_ms(void)
@@ -322,30 +304,63 @@ static esp_err_t write_raw(const uint8_t *data, size_t len)
 	}
 }
 
-// write_frame writes a protocol frame split into ATT-sized writes.
+// The link xy_upload runs over: writes without response and the
+// notification queue.
+static int link_write(void *ctx, const uint8_t *data, size_t len)
+{
+	dump("-->", data, len);
+	esp_err_t err = write_raw(data, len);
+	return err == ESP_OK ? XY_OK : err == XY_ERR_NOT_CONNECTED ? XY_ERR_NOT_CONNECTED : XY_ERR_WRITE;
+}
+
+static int link_recv(void *ctx, uint8_t *buf, size_t cap, uint32_t timeout_ms)
+{
+	notify_t n;
+	if (xQueueReceive(p.notify, &n, pdMS_TO_TICKS(timeout_ms)) != pdTRUE)
+		return 0;
+	if (n.len == 0)
+		return -1; // the link dropped
+	size_t k = n.len < cap ? n.len : cap;
+	memcpy(buf, n.data, k);
+	return (int)k;
+}
+
+static void link_sleep(void *ctx, uint32_t ms)
+{
+	vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
+static uint32_t link_now(void *ctx)
+{
+	return now_ms();
+}
+
+static size_t link_payload(void *ctx)
+{
+	return att_payload();
+}
+
+static void link_log(void *ctx, const char *fmt, ...)
+{
+	char line[128];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(line, sizeof line, fmt, ap);
+	va_end(ap);
+	ESP_LOGI(TAG, "%s", line);
+}
+
+static const xy_link_t link = {link_write, link_recv, link_sleep, link_now, link_payload, link_log, NULL};
+
 static esp_err_t write_frame(const uint8_t *frame, size_t len)
 {
-	dump("-->", frame, len);
-	size_t chunk = att_payload();
-	for (size_t off = 0; off < len; off += chunk) {
-		size_t n = len - off < chunk ? len - off : chunk;
-		esp_err_t err = write_raw(frame + off, n);
-		if (err != ESP_OK)
-			return err;
-	}
-	return ESP_OK;
+	p.session.debug = p.debug;
+	return xy_write_frame(&p.session, frame, len);
 }
 
 static void drain(void)
 {
-	notify_t n;
-	while (xQueueReceive(p.notify, &n, 0) == pdTRUE) {
-	}
-}
-
-static uint8_t next_seq(void)
-{
-	return p.seq++;
+	xy_drain(&p.session);
 }
 
 // ---- Connecting ----
@@ -454,6 +469,7 @@ static esp_err_t connect_locked(const xy_panel_config_t *cfg, uint32_t timeout_m
 	    ESP_OK)
 		goto gatt_fail;
 
+	xy_session_init(&p.session, &link);
 	p.connected = true;
 	ESP_LOGI(TAG, "connected, MTU %u, writes of %u bytes", ble_att_mtu(p.conn), (unsigned)att_payload());
 	if ((err = initialize()) != ESP_OK) {
@@ -522,7 +538,7 @@ static esp_err_t command(size_t (*build)(uint8_t *, uint8_t), const char *what)
 {
 	uint8_t b[XY_MAX_COMMAND];
 	xSemaphoreTake(p.lock, portMAX_DELAY);
-	esp_err_t err = p.connected ? write_frame(b, build(b, next_seq())) : XY_ERR_NOT_CONNECTED;
+	esp_err_t err = p.connected ? write_frame(b, build(b, xy_next_seq(&p.session))) : XY_ERR_NOT_CONNECTED;
 	xSemaphoreGive(p.lock);
 	if (err != ESP_OK)
 		ESP_LOGW(TAG, "%s failed: %s", what, xy_err_name(err));
@@ -535,7 +551,7 @@ esp_err_t xy_panel_set_brightness(uint8_t level)
 		level = XY_MAX_BRIGHTNESS;
 	uint8_t b[XY_MAX_COMMAND];
 	xSemaphoreTake(p.lock, portMAX_DELAY);
-	esp_err_t err = p.connected ? write_frame(b, xy_cmd_brightness(b, next_seq(), level)) : XY_ERR_NOT_CONNECTED;
+	esp_err_t err = p.connected ? write_frame(b, xy_cmd_brightness(b, xy_next_seq(&p.session), level)) : XY_ERR_NOT_CONNECTED;
 	if (err == ESP_OK)
 		p.brightness = level;
 	xSemaphoreGive(p.lock);
@@ -626,168 +642,13 @@ void xy_blob_file(xy_blob_t *b, void *file, uint32_t len)
 	b->ctx = file;
 }
 
-// wait_ack waits for the ack with index want (0 acks the program select).
-// Duplicates and acks for other indices are skipped; while waiting for a
-// packet ack, 88ff05 means the panel left receive mode.
-static esp_err_t wait_ack(uint16_t want, uint32_t timeout_ms, xy_ack_t *out)
-{
-	uint32_t start = now_ms();
-	for (;;) {
-		uint32_t spent = now_ms() - start;
-		if (spent >= timeout_ms)
-			return XY_ERR_NO_ACK;
-		notify_t n;
-		if (xQueueReceive(p.notify, &n, pdMS_TO_TICKS(timeout_ms - spent)) != pdTRUE)
-			return XY_ERR_NO_ACK;
-		if (n.len == 0)
-			return XY_ERR_NOT_CONNECTED;
-		if (want > 0 && xy_is_not_ready(n.data, n.len))
-			return XY_ERR_NOT_READY;
-		xy_ack_t a;
-		if (!xy_parse_ack(n.data, n.len, &a))
-			continue;
-		if (p.have_last_ack_ctr && a.ctr == p.last_ack_ctr)
-			continue;
-		p.last_ack_ctr = a.ctr;
-		p.have_last_ack_ctr = true;
-		if (a.index != want)
-			continue;
-		if (out)
-			*out = a;
-		return ESP_OK;
-	}
-}
-
-// wait_upload_applied waits for the 88ff05 the panel sends once it has
-// stored an upload; commands sent before it can be rejected.
-static void wait_upload_applied(void)
-{
-	uint32_t start = now_ms();
-	while (now_ms() - start < XY_UPLOAD_APPLIED_TIMEOUT_MS) {
-		notify_t n;
-		if (xQueueReceive(p.notify, &n, pdMS_TO_TICKS(100)) != pdTRUE)
-			continue;
-		if (n.len == 0 || xy_is_not_ready(n.data, n.len)) {
-			if (p.debug)
-				ESP_LOGI(TAG, "upload applied after %u ms", (unsigned)(now_ms() - start));
-			return;
-		}
-	}
-	if (p.debug)
-		ESP_LOGI(TAG, "no upload-applied notification");
-}
-
-static esp_err_t select_program(uint8_t program, uint8_t seq)
-{
-	uint8_t cmd[XY_MAX_COMMAND];
-	size_t n = xy_cmd_select_program(cmd, program, seq);
-	uint32_t start = now_ms();
-	for (;;) {
-		drain();
-		esp_err_t err = write_frame(cmd, n);
-		if (err != ESP_OK)
-			return err;
-		err = wait_ack(0, XY_SELECT_RETRY_MS, NULL);
-		if (err == ESP_OK || err == XY_ERR_NOT_CONNECTED)
-			return err;
-		if (now_ms() - start > XY_PANEL_BUSY_TIMEOUT_MS)
-			return XY_ERR_BUSY;
-		if (p.debug)
-			ESP_LOGI(TAG, "panel busy (%u s), re-sending program select",
-				 (unsigned)((now_ms() - start) / 1000));
-	}
-}
-
-static esp_err_t write_packet(const xy_blob_t *gif, uint32_t i, uint8_t program, uint8_t seq,
-			      const uint8_t trailer[8], uint8_t *buf)
-{
-	uint8_t header[XY_FIRST_HEADER];
-	size_t hl = xy_packet_header(header, gif->len, i, program, seq, trailer);
-	uint32_t off, len;
-	xy_packet_span(gif->len, i, &off, &len);
-	size_t total = hl + len, chunk = att_payload();
-	if (p.debug)
-		ESP_LOGI(TAG, "packet %u (%u bytes)", (unsigned)i + 1, (unsigned)total);
-	for (size_t pos = 0; pos < total; pos += chunk) {
-		size_t n = total - pos < chunk ? total - pos : chunk, k = 0;
-		if (pos < hl) {
-			k = hl - pos < n ? hl - pos : n;
-			memcpy(buf, header + pos, k);
-		}
-		if (k < n && gif->read_at(gif->ctx, off + (uint32_t)(pos + k - hl), buf + k, n - k) != 0)
-			return ESP_FAIL;
-		esp_err_t err = write_raw(buf, n);
-		if (err != ESP_OK)
-			return err;
-	}
-	return ESP_OK;
-}
-
-static esp_err_t upload_packets(const xy_blob_t *gif, uint8_t program, uint8_t seq, const uint8_t trailer[8])
-{
-	uint8_t *buf = malloc(MAX_WRITE);
-	if (!buf)
-		return ESP_ERR_NO_MEM;
-	uint32_t n = xy_packet_count(gif->len);
-	esp_err_t err = ESP_OK;
-	for (uint32_t i = 0; i < n && err == ESP_OK; i++) {
-		uint32_t off, len;
-		xy_packet_span(gif->len, i, &off, &len);
-		xy_ack_t a;
-		for (int attempt = 0; attempt <= XY_MAX_PACKET_RESENDS; attempt++) {
-			drain();
-			if ((err = write_packet(gif, i, program, seq, trailer, buf)) != ESP_OK)
-				break;
-			err = wait_ack((uint16_t)(i + 1), xy_ack_timeout_ms(xy_packet_header_len(i) + len), &a);
-			if (err != XY_ERR_NO_ACK)
-				break;
-		}
-		if (err == ESP_OK && a.status < XY_ACK_STATUS_MIN_OK) {
-			ESP_LOGE(TAG, "packet %u/%u rejected (status 0x%02x)", (unsigned)i + 1, (unsigned)n, a.status);
-			err = XY_ERR_REJECTED;
-		}
-	}
-	free(buf);
-	return err;
-}
-
-static esp_err_t send_attempt(const xy_blob_t *gif, const xy_send_opts_t *o)
-{
-	if (!p.connected)
-		return XY_ERR_NOT_CONNECTED;
-	bool live = o->program == XY_PROGRAM_LIVE;
-	if (!live && !o->append) {
-		// The clear is never acked; give the panel time to apply it or the
-		// upload gets appended instead of replacing the playlist.
-		uint8_t cmd[XY_MAX_COMMAND];
-		drain();
-		write_frame(cmd, xy_cmd_clear_playlist(cmd, next_seq()));
-		vTaskDelay(pdMS_TO_TICKS(XY_CLEAR_SETTLE_MS));
-	}
-	uint8_t seq = next_seq(), trailer[8];
-	xy_trailer(trailer, o->static_image, o->frames, o->total_ms);
-	esp_err_t err;
-	for (int attempt = 1;; attempt++) {
-		if ((err = select_program(o->program, seq)) != ESP_OK)
-			return err;
-		if (p.debug)
-			ESP_LOGI(TAG, "uploading %u bytes in %u packet(s)", (unsigned)gif->len,
-				 (unsigned)xy_packet_count(gif->len));
-		err = upload_packets(gif, o->program, seq, trailer);
-		if (err != XY_ERR_NOT_READY || attempt == XY_MAX_PACKET_RESENDS)
-			break;
-	}
-	if (err == ESP_OK && !live)
-		wait_upload_applied();
-	return err;
-}
-
 esp_err_t xy_panel_send_gif(const xy_blob_t *gif, const xy_send_opts_t *opts)
 {
 	esp_err_t err = ESP_OK;
 	for (int attempt = 1; attempt <= 3; attempt++) {
 		xSemaphoreTake(p.lock, portMAX_DELAY);
-		err = send_attempt(gif, opts);
+		p.session.debug = p.debug;
+		err = p.connected ? xy_upload(&p.session, gif, opts) : XY_ERR_NOT_CONNECTED;
 		xSemaphoreGive(p.lock);
 		if (err == ESP_OK || err == XY_ERR_NOT_CONNECTED || err == XY_ERR_BUSY)
 			return err;

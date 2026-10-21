@@ -11,17 +11,9 @@
 
 #include "esp_err.h"
 #include "xy_proto.h"
+#include "xy_upload.h"
 
-#define XY_ERR_BASE 0x7100
-#define XY_ERR_NOT_CONNECTED (XY_ERR_BASE + 1)
-#define XY_ERR_NOT_FOUND (XY_ERR_BASE + 2)     // scan found no panel
-#define XY_ERR_HANDSHAKE (XY_ERR_BASE + 3)     // panel rejected the handshake (88ff0f)
-#define XY_ERR_BUSY (XY_ERR_BASE + 4)          // program select never acknowledged
-#define XY_ERR_NO_ACK (XY_ERR_BASE + 5)        // upload packet never acknowledged
-#define XY_ERR_REJECTED (XY_ERR_BASE + 6)      // ack status below XY_ACK_STATUS_MIN_OK
-#define XY_ERR_NOT_READY (XY_ERR_BASE + 7)     // 88ff05 instead of an ack, resends exhausted
-#define XY_ERR_GATT (XY_ERR_BASE + 8)          // service or characteristics missing
-
+// Text for XY_ERR_* codes (xy_upload.h) and any other esp_err_t.
 const char *xy_err_name(esp_err_t err);
 
 typedef struct {
@@ -59,25 +51,10 @@ esp_err_t xy_panel_reinit(void);
 // Raw command from its type byte on; magic and length are added.
 esp_err_t xy_panel_raw(const uint8_t *body, size_t len);
 
-// The GIF to upload, read in pieces: from RAM or from a file.
-typedef struct {
-	uint32_t len;
-	// Reads len bytes at off into buf; returns 0 or -1.
-	int (*read_at)(void *ctx, uint32_t off, uint8_t *buf, size_t len);
-	void *ctx;
-} xy_blob_t;
-
+// Blobs for xy_panel_send_gif (xy_blob_t is in xy_upload.h).
 void xy_blob_mem(xy_blob_t *b, const uint8_t *data, uint32_t len);
 // The blob reads f with fseek/fread; f stays open for the upload.
 void xy_blob_file(xy_blob_t *b, void *file, uint32_t len);
-
-typedef struct {
-	uint8_t program;   // XY_PROGRAM_PLAYLIST or XY_PROGRAM_LIVE
-	bool append;       // playlist: add to it instead of replacing it
-	bool static_image; // static trailer
-	uint32_t frames;   // animation trailer: frame count and total delay
-	uint32_t total_ms;
-} xy_send_opts_t;
 
 // xy_panel_send_gif uploads a GIF: clears the playlist first unless live or
 // appending, selects the program, sends the acknowledged packets and, for

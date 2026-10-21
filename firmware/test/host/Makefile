@@ -12,13 +12,16 @@ VENDOR_CFLAGS := -std=gnu17 -O1 -g -fsanitize=address -w -DPNGLE_NO_GAMMA_CORREC
 GO := GOCACHE=$(CURDIR)/$(BUILD)/gocache GOPROXY=off GOTOOLCHAIN=local go
 BUILD := build
 
-TESTS := proto imaging httputil
+TESTS := proto upload imaging httputil
 IMAGING := $(wildcard $(COMP)/imaging/*.c)
 
 all: $(addprefix $(BUILD)/test_,$(TESTS))
 	@for t in $^; do ./$$t || exit 1; done
 
 $(BUILD)/test_proto: test_proto.c test_main.c $(COMP)/xyaoled/xy_proto.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $^
+
+$(BUILD)/test_upload: test_upload.c test_main.c $(COMP)/xyaoled/xy_proto.c $(COMP)/xyaoled/xy_upload.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $^
 
 $(BUILD)/test_httputil: test_httputil.c test_main.c $(wildcard $(COMP)/httputil/*.c) | $(BUILD)
