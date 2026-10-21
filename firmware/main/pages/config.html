@@ -85,6 +85,8 @@ td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);word-b
 <div><label for="stream_fps">Stream fps <span class="hint">1–5, <span data-hint="stream_fps"></span></span></label><input type="number" id="stream_fps" min="1" max="5"></div>
 <div><label for="stream_resume_delay">Stream resume delay <span class="hint">s, <span data-hint="stream_resume_delay"></span></span></label><input type="number" id="stream_resume_delay" min="0" max="60" step="0.1"></div>
 </div>
+<label for="stream_colors">Stream colours <span class="hint">— fewer make smaller frames and a faster stream; images with fewer colours keep theirs</span></label>
+<select id="stream_colors" data-num><option value="256">256, as the Go daemon (default)</option><option value="125">125</option><option value="64">64</option><option value="27">27</option><option value="8">8</option></select>
 <label class="check"><input type="checkbox" id="debug_ble"> Log every BLE write and notification</label>
 <div class="grid">
 <div><label for="hostname">Host name <span class="hint">.local</span></label><input type="text" id="hostname" maxlength="31"></div>
@@ -114,7 +116,7 @@ td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);word-b
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const FIELDS = ['panel_width','panel_height','panel_match','panel_name','panel_mac','upside_down','passthrough','passthrough_partial','stream_fps','stream_resume_delay','debug_ble','hostname','http_port'];
+const FIELDS = ['panel_width','panel_height','panel_match','panel_name','panel_mac','upside_down','passthrough','passthrough_partial','stream_fps','stream_resume_delay','stream_colors','debug_ble','hostname','http_port'];
 let current = {}, restartKeys = [], pending = null;
 
 function msg(el, text, cls) { el.textContent = text; el.className = 'msg ' + (cls || ''); }
@@ -173,7 +175,7 @@ function formValues() {
   const out = {};
   for (const k of FIELDS) {
     const el = $(k);
-    let v = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value.trim();
+    let v = el.type === 'checkbox' ? el.checked : el.type === 'number' || 'num' in el.dataset ? Number(el.value) : el.value.trim();
     if (v !== current[k]) out[k] = v;
   }
   return out;

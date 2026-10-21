@@ -35,7 +35,9 @@ esp_err_t display_live(const img_reader_t *r);
 // lock, so it runs alongside a send); display_live_send sends to the live
 // view and frees the frame.
 typedef struct display_live_frame display_live_frame_t;
-esp_err_t display_live_encode(const uint8_t *data, size_t len, display_live_frame_t **out);
+// colors: at most that many (256: as the Go daemon; fewer is a uniform
+// cube of 8, 27, 64 or 125, see img_encode_gif_levels).
+esp_err_t display_live_encode(const uint8_t *data, size_t len, unsigned colors, display_live_frame_t **out);
 uint32_t display_live_encode_us(const display_live_frame_t *f); // decode + encode time
 esp_err_t display_live_send(display_live_frame_t *f);
 void display_live_free(display_live_frame_t *f);

@@ -408,6 +408,42 @@ def test_stream():
     asyncio.run(run())
 
 
+def test_stream_colors():
+    import websockets
+
+    async def frame_with(query, text=None):
+        host = BASE.split('://', 1)[1]
+        s0 = stats()['uploads']
+        async with websockets.connect(f'ws://{host}/stream?fps=5{query}', max_size=None) as ws:
+            if text:
+                await ws.send(text)
+            await ws.send(fixture('png_panel.png'))
+            for _ in range(50):
+                await asyncio.sleep(0.1)
+                if stats()['uploads'] > s0:
+                    break
+            gif = last()[0]
+        await asyncio.sleep(2)  # let the playlist resume
+        return gif
+
+    async def run():
+        full = await frame_with('')
+        few = await frame_with('&colors=8')
+        msg = await frame_with('', 'colors=27')
+        check(few.startswith(b'GIF89a') and len(few) < len(full), f'colors=8: {len(few)} vs {len(full)} bytes')
+        check(len(few) < len(msg) < len(full), f'colors=27 message: {len(msg)} bytes')
+        print(f'  stream frame: {len(full)} bytes at 256 colours, {len(msg)} at 27, {len(few)} at 8')
+        r = post_json('/api/config', {'stream_colors': 64})
+        check(r.status == 200, f'stream_colors 64: {r.status}')
+        check(get('/health').json()['config']['stream_colors'] == 64, 'stream_colors not in /health')
+        set64 = await frame_with('')
+        check(len(msg) < len(set64) < len(full), f'stream_colors 64: {len(set64)} bytes')
+        check(post_json('/api/config', {'stream_colors': 4}).status == 400, 'stream_colors 4 accepted')
+        post_json('/api/config', {'stream_colors': 256})
+
+    asyncio.run(run())
+
+
 def test_restart_keeps_settings():
     get('/brightness/77')
     post_json('/api/config', {'stream_fps': 2})
@@ -442,7 +478,8 @@ def main():
         return 2
     tests = [test_pages_and_health, test_upload_animation, test_upload_large_animation, test_upload_still,
              test_passthrough, test_display_json, test_playlist, test_live, test_commands, test_brightness,
-             test_upload_test, test_config_api, test_long_animation, test_status, test_stream, test_restart_keeps_settings]
+             test_upload_test, test_config_api, test_long_animation, test_status, test_stream, test_stream_colors,
+             test_restart_keeps_settings]
     for t in tests:
         before = len(failures)
         start = time.time()

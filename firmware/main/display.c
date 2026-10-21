@@ -183,8 +183,10 @@ static size_t frame_limit(const img_target_t *t)
 	return free_bytes > OUT_RESERVE + fb ? (free_bytes - OUT_RESERVE) / fb : 1;
 }
 
-// decode_encode decodes r into frames and encodes the panel's GIF.
-static esp_err_t decode_encode(const img_reader_t *r, display_kind_t kind, bool in_ram, encoded_t *out)
+// decode_encode decodes r into frames and encodes the panel's GIF, with
+// at most levels³ colours (0: as the Go daemon).
+static esp_err_t decode_encode(const img_reader_t *r, display_kind_t kind, bool in_ram, unsigned levels,
+			       encoded_t *out)
 {
 	img_target_t t = target();
 	size_t limit = kind == DISPLAY_STATIC ? 1 : in_ram ? STREAM_MAX_FRAMES : frame_limit(&t);
@@ -215,7 +217,7 @@ static esp_err_t decode_encode(const img_reader_t *r, display_kind_t kind, bool 
 			w = (img_writer_t){file_write, f};
 		}
 		t0 = esp_timer_get_time();
-		ierr = img_encode_gif(frames, &w, &gi);
+		ierr = img_encode_gif_levels(frames, &w, levels, &gi);
 		out->encode_us = (uint32_t)(esp_timer_get_time() - t0);
 		if (f && fclose(f) != 0 && ierr == IMG_OK)
 			ierr = IMG_ERR_IO;
@@ -242,7 +244,8 @@ done:
 // encode turns an upload into the panel's GIF in out_path (in RAM when
 // out_path is NULL). A GIF already panel-sized is stored as received and,
 // if it passes the checks, sent as it is.
-static esp_err_t encode(const img_reader_t *r, display_kind_t kind, const char *out_path, encoded_t *out)
+static esp_err_t encode(const img_reader_t *r, display_kind_t kind, const char *out_path, unsigned levels,
+		       encoded_t *out)
 {
 	memset(out, 0, sizeof *out);
 	if (out_path)
@@ -297,12 +300,12 @@ static esp_err_t encode(const img_reader_t *r, display_kind_t kind, const char *
 		if (!in)
 			return image_error("scratch", IMG_ERR_IO);
 		img_reader_t fr = {file_read, in};
-		esp_err_t err = decode_encode(&fr, kind, false, out);
+		esp_err_t err = decode_encode(&fr, kind, false, levels, out);
 		fclose(in);
 		unlink(IN_PATH);
 		return err;
 	}
-	return decode_encode(&pr, kind, out_path == NULL, out);
+	return decode_encode(&pr, kind, out_path == NULL, levels, out);
 }
 
 // send_checks mirrors the Go send(): playlist uploads are refused while
@@ -348,7 +351,7 @@ static esp_err_t show(const img_reader_t *r, display_kind_t kind, uint8_t progra
 		return err;
 	xSemaphoreTake(d.work, portMAX_DELAY);
 	encoded_t e;
-	err = encode(r, kind, OUT_PATH, &e);
+	err = encode(r, kind, OUT_PATH, 0, &e);
 	if (err == ESP_OK)
 		err = send_encoded(&e, program, false);
 	encoded_free(&e);
@@ -386,14 +389,19 @@ struct display_live_frame {
 	encoded_t e;
 };
 
-esp_err_t display_live_encode(const uint8_t *data, size_t len, display_live_frame_t **out)
+esp_err_t display_live_encode(const uint8_t *data, size_t len, unsigned colors, display_live_frame_t **out)
 {
 	display_live_frame_t *f = calloc(1, sizeof *f);
 	if (!f)
 		return image_error("frame", IMG_ERR_NOMEM);
 	mem_in_t m = {data, len, 0};
 	img_reader_t r = {mem_read, &m};
-	esp_err_t err = encode(&r, DISPLAY_AUTO, NULL, &f->e);
+	// The largest cube that fits in colors (8, 27, 64, 125); 256 or more
+	// keeps the Go palette.
+	unsigned levels = 0;
+	while (colors < 256 && levels < IMG_MAX_LEVELS && (levels + 1) * (levels + 1) * (levels + 1) <= colors)
+		levels++;
+	esp_err_t err = encode(&r, DISPLAY_AUTO, NULL, levels < 2 ? 0 : levels, &f->e);
 	if (err != ESP_OK) {
 		display_live_free(f);
 		return err;
@@ -472,7 +480,7 @@ esp_err_t display_playlist_add(display_playlist_t *pl, const img_reader_t *r)
 	}
 	char path[40];
 	snprintf(path, sizeof path, SCRATCH "/item%02d.gif", pl->count);
-	esp_err_t err = encode(r, DISPLAY_AUTO, path, &pl->items[pl->count]);
+	esp_err_t err = encode(r, DISPLAY_AUTO, path, 0, &pl->items[pl->count]);
 	if (err != ESP_OK) {
 		char msg[sizeof d.error];
 		strlcpy(msg, d.error, sizeof msg);

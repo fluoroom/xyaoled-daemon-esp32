@@ -231,6 +231,84 @@ static void test_encode_roundtrip(void)
 	roundtrip("png_small.png", "enc_png_small");
 }
 
+// encode_levels encodes src's first frame with at most levels³ colours and
+// decodes it back into out (one panel frame); returns the GIF size.
+static size_t encode_levels(const char *src, unsigned levels, uint8_t *out)
+{
+	char path[256];
+	size_t len;
+	snprintf(path, sizeof path, FIX "%s", src);
+	uint8_t *data = read_file(path, &len);
+	img_frames_t *fr = img_frames_new_mem(&panel, 1);
+	img_info_t info;
+	CHECK(data && img_decode_mem(data, len, fr, &info) == IMG_OK, "%s decode", src);
+	mem_sink_t sink = {0};
+	img_writer_t w = {sink_write, &sink};
+	img_gif_info_t gi;
+	CHECK(img_encode_gif_levels(fr, &w, levels, &gi) == IMG_OK && gi.bytes == sink.len, "%s encode", src);
+	img_frames_t *back = img_frames_new_mem(&panel, 1);
+	CHECK(img_decode_mem(sink.buf, sink.len, back, &info) == IMG_OK, "%s re-decode", src);
+	img_frames_get(back, 0, out, NULL);
+	free(sink.buf);
+	free(data);
+	img_frames_free(fr);
+	img_frames_free(back);
+	return gi.bytes;
+}
+
+static void test_encode_levels(void)
+{
+	size_t fb = 96 * 16 * 3;
+	uint8_t *full = malloc(fb), *cut = malloc(fb), *src = malloc(fb);
+	size_t full_len = encode_levels("png_panel.png", 0, full);
+	img_frames_t *fr = img_frames_new_mem(&panel, 1);
+	size_t len;
+	uint8_t *data = read_file(FIX "png_panel.png", &len);
+	img_info_t info;
+	img_decode_mem(data, len, fr, &info);
+	img_frames_get(fr, 0, src, NULL);
+	img_frames_free(fr);
+	free(data);
+	for (unsigned levels = 2; levels <= IMG_MAX_LEVELS; levels++) {
+		size_t n = encode_levels("png_panel.png", levels, cut);
+		bool on_cube = true;
+		for (size_t i = 0; i < fb; i++) {
+			bool level = false;
+			for (unsigned k = 0; k < levels; k++)
+				level |= cut[i] == k * 255 / (levels - 1);
+			on_cube &= level;
+		}
+		// Dithering keeps the average colour of an area, not single pixels:
+		// compare 4x4 block means.
+		double err = 0;
+		int blocks = 0;
+		for (int by = 0; by < 16; by += 4)
+			for (int bx = 0; bx < 96; bx += 4)
+				for (int c = 0; c < 3; c++, blocks++) {
+					int a = 0, b = 0;
+					for (int y = by; y < by + 4; y++)
+						for (int x = bx; x < bx + 4; x++) {
+							a += cut[(y * 96 + x) * 3 + c];
+							b += src[(y * 96 + x) * 3 + c];
+						}
+					err += abs(a - b) / 16.0;
+				}
+		err /= blocks;
+		printf("  %3u colours: %zu bytes (256: %zu), 4x4 mean error %.1f\n", levels * levels * levels, n, full_len,
+		       err);
+		CHECK(on_cube, "%u levels: a pixel off the cube", levels);
+		CHECK(n < full_len, "%u levels: %zu bytes, not under %zu", levels, n, full_len);
+		CHECK(err < 255.0 / (levels - 1) / 4, "%u levels: block error %.1f", levels, err);
+	}
+	// 7 colours fit in 8: kept exact, as without a limit.
+	encode_levels("png_small.png", 0, full);
+	encode_levels("png_small.png", 2, cut);
+	CHECK(memcmp(full, cut, fb) == 0, "few colours changed by the limit");
+	free(full);
+	free(cut);
+	free(src);
+}
+
 static void test_encode_dithered(void)
 {
 	// More than 256 colours: dithered, still a valid GIF of the right size.
@@ -458,6 +536,7 @@ int main(void)
 		TEST(test_jpeg),
 		TEST(test_encode_roundtrip),
 		TEST(test_encode_dithered),
+		TEST(test_encode_levels),
 		TEST(test_encode_large_panel),
 		TEST(test_file_store_and_limit),
 		TEST(test_passthrough),

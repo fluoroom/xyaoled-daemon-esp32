@@ -94,6 +94,13 @@ typedef struct {
 // several become a looping animation with one global colour table (the
 // panel's decoder loses sync on per-frame tables) and background disposal.
 img_err_t img_encode_gif(img_frames_t *frames, const img_writer_t *w, img_gif_info_t *out);
+// The same with at most levels³ colours (levels 2..IMG_MAX_LEVELS; 0 is
+// img_encode_gif): frames with more colours than that are dithered onto a
+// fixed uniform cube, the same for every frame so dithering doesn't
+// flicker; frames with fewer keep their exact colours. Fewer colours make
+// a smaller GIF (narrower LZW codes, shorter colour table).
+#define IMG_MAX_LEVELS 5
+img_err_t img_encode_gif_levels(img_frames_t *frames, const img_writer_t *w, unsigned levels, img_gif_info_t *out);
 
 // img_black_frame adds one opaque black frame (for clear-screen).
 img_err_t img_black_frame(img_frames_t *frames);

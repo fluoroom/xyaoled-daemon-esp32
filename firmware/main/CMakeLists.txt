@@ -10,6 +10,6 @@ idf_component_register(SRCS "main.c" "settings.c" "storage.c" ${net} "display.c"
                        INCLUDE_DIRS "."
                        PRIV_REQUIRES xyaoled imaging httputil nvs_flash spi_flash esp_netif esp_wifi esp_eth
                                      esp_http_server esp_timer esp_app_format
-                       EMBED_FILES "pages/config.html"
-                                   # The Go daemon's test page, used as is (git submodule).
-                                   "../../reference/go-daemon/testpage.html")
+                       # test.html: the Go daemon's test page (reference/go-daemon/testpage.html)
+                       # with a stream colour selector.
+                       EMBED_FILES "pages/config.html" "pages/test.html")

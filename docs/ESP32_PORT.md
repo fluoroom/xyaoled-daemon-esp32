@@ -91,7 +91,8 @@ Changing this table later works over USB but wipes NVS.
 ```
 firmware/
   main/                    app: settings, storage, wifi, display, http, stream
-    pages/config.html      the /config page (the /test page is the Go one, from the submodule)
+    pages/config.html      the /config page
+    pages/test.html        the /test page: the Go one (submodule) plus a stream colour selector
   components/
     xyaoled/               panel protocol: xy_proto (frames), xy_upload (acked uploads), xy_panel (NimBLE)
     imaging/               GIF/PNG/JPEG decoders onto the panel canvas, frame store, GIF encoder, passthrough scan
@@ -195,6 +196,7 @@ save is all or nothing, when changed from the `/config` page (section 5b).
 - [ ] 🔨 `UPSIDE_DOWN` → `upside_down`
 - [ ] 🔨 `DEBUG_BLE` → `debug_ble` (logs every write and notification)
 - [ ] 🖥️ `STREAM_FPS` → `stream_fps` (default 4, 1–5)
+- [ ] 🖥️ New: `stream_colors` (default 256 as Go; 125, 64, 27, 8: a fixed uniform cube, ~5 fps on the panel)
 - [ ] 🖥️ `STREAM_RESUME_DELAY` → `stream_resume_delay` (seconds, default 1.5)
 - [ ] 🔨 Panel matching: name substring (`XYAO`, the Go behaviour) or MAC (`panel_match`, `panel_name`, `panel_mac`). The Go `LED_PANEL_MAC` was read but never used.
 - [ ] 🖥️ Startup log of the configuration
@@ -282,7 +284,7 @@ Same paths, form fields and status codes as the Go daemon.
 
 - [ ] 🖥️ `esp_http_server` on port 11001
 - [ ] 🖥️ `GET /health`: status and config (width, height, stream fps, resume delay); plus `panel_connected`, `free_heap`
-- [ ] 🖥️ `GET /test`: the Go test page, embedded from the submodule
+- [ ] 🖥️ `GET /test`: the Go test page with a stream colour selector (`firmware/main/pages/test.html`)
 - [ ] 🖥️ `POST /display`, `/display-r`: JSON `{image: base64, type}`; type detected when empty (see QUESTIONS.md for `type` after `image`)
 - [ ] 🖥️ `POST /upload`: multipart `file`; `GET` redirects to `/test`
 - [ ] 🖥️ `POST /playlist`: repeated `file`; every item encoded before the playlist is replaced
@@ -331,6 +333,7 @@ Same paths, form fields and status codes as the Go daemon.
 - [ ] 🔨 Binary message = one image frame, decoded in RAM; frames over 64 KB close the socket (Go: 4 MB)
 - [ ] 🖥️ Only the newest frame kept
 - [ ] 🖥️ Rate limit `stream_fps`; `?fps=N` and text `fps=N` override (1–5)
+- [ ] 🖥️ `stream_colors`; `?colors=N` and text `colors=N` override; a new stream starts from the settings
 - [ ] 🔨 Up to 4 clients counted; playlist blocked from the first connect until the resume
 - [ ] 🖥️ Playlist resumes `stream_resume_delay` after the last disconnect; a reconnect within it keeps the live view
 - [ ] 🖥️ One task sends frames and the resume (a late frame can't land after it)

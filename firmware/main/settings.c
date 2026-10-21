@@ -74,6 +74,7 @@ static const field_t fields[] = {
 	F("passthrough", T_BOOL, passthrough, 0, 1, 0),
 	F("passthrough_partial", T_BOOL, passthrough_partial, 0, 1, 0),
 	F("stream_fps", T_U8, stream_fps, 1, 5, 0),
+	F("stream_colors", T_U16, stream_colors, 8, 256, 0),
 	F("stream_resume_delay", T_SECONDS, stream_resume_ms, 0, 60000, 0),
 	F("debug_ble", T_BOOL, debug_ble, 0, 1, 0),
 };
@@ -90,6 +91,7 @@ void settings_defaults(settings_t *s)
 	strlcpy(s->panel_name, CONFIG_XY_PANEL_NAME, sizeof s->panel_name);
 	s->passthrough = true;
 	s->stream_fps = CONFIG_XY_STREAM_FPS;
+	s->stream_colors = 256;
 	s->stream_resume_ms = CONFIG_XY_STREAM_RESUME_MS;
 }
 

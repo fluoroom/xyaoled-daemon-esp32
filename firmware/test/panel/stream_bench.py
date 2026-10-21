@@ -3,7 +3,7 @@
 than the panel takes them, then print the fps it reached and where each
 frame's time went (/api/status "stream").
 
-    firmware/test/panel/stream_bench.py [http://xyaoled.local] [--fps 5] [--seconds 15] [frame.png ...]
+    firmware/test/panel/stream_bench.py [http://xyaoled.local] [--fps 5] [--colors 256] [--seconds 15] [frame.png ...]
 
 Without frames, it sends 96x16 PNGs like the test page's webcam (a moving
 gradient with noise). The playlist comes back after the stream closes."""
@@ -48,9 +48,9 @@ def status(base):
         return json.load(r)
 
 
-async def run(base, fps, seconds, frames):
+async def run(base, fps, colors, seconds, frames):
     host = base.split('://', 1)[1]
-    async with websockets.connect(f'ws://{host}/stream?fps={fps}', max_size=None) as ws:
+    async with websockets.connect(f'ws://{host}/stream?fps={fps}&colors={colors}', max_size=None) as ws:
         start = time.monotonic()
         i = 0
         while time.monotonic() - start < seconds:
@@ -60,7 +60,7 @@ async def run(base, fps, seconds, frames):
         st = await asyncio.get_running_loop().run_in_executor(None, status, base)
         elapsed = time.monotonic() - start
     s = st['stream']
-    print(f'{s["frames"]} frames in {elapsed:.1f} s = {s["frames"] / elapsed:.2f} fps (asked {fps}), '
+    print(f'{s["frames"]} frames in {elapsed:.1f} s = {s["frames"] / elapsed:.2f} fps (asked {fps}, {colors} colours), '
           f'{i} offered, heap {st["free_heap"]} (min {st["min_free_heap"]})')
     if s['frames']:
         print('per frame: ' + ', '.join(f'{k} {s[k]:.1f}' for k in
@@ -71,11 +71,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('base', nargs='?', default='http://xyaoled.local')
     ap.add_argument('--fps', type=int, default=5)
+    ap.add_argument('--colors', type=int, default=256)
     ap.add_argument('--seconds', type=float, default=15)
     ap.add_argument('frames', nargs='*')
     a = ap.parse_args()
     frames = [open(f, 'rb').read() for f in a.frames] or webcam_frames()
-    asyncio.run(run(a.base.rstrip('/'), a.fps, a.seconds, frames))
+    asyncio.run(run(a.base.rstrip('/'), a.fps, a.colors, a.seconds, frames))
 
 
 if __name__ == '__main__':

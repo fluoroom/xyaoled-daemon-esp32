@@ -192,14 +192,20 @@ static int clamp255(int v)
 	return v < 0 ? 0 : v > 255 ? 255 : v;
 }
 
+// cube_level is the nearest of levels evenly spaced values to v.
+static int cube_level(int v, int levels)
+{
+	return (v * (levels - 1) + 127) / 255;
+}
+
 // quantize maps rgb to palette indices with Floyd–Steinberg dithering, as
 // draw.FloydSteinberg does in the Go code. When every colour is in the
 // palette (256 or fewer in all) no error arises and the mapping is exact.
-// err holds two rows of (w + 2) × 3 errors scaled by 16.
-static void quantize(const img_frames_t *f, const uint8_t *rgb, uint8_t *idx, int w, int h, int *err)
+// With levels, pal is the levels³ cube and the nearest colour is computed
+// per channel. err holds two rows of (w + 2) × 3 errors scaled by 16.
+static void quantize(const img_frames_t *f, const uint8_t *pal, size_t n, int levels, const uint8_t *rgb,
+		     uint8_t *idx, int w, int h, int *err)
 {
-	const uint8_t *pal;
-	size_t n = img_frames_palette(f, &pal);
 	int *cur = err, *nxt = err + (w + 2) * 3;
 	memset(err, 0, sizeof(int) * (size_t)(w + 2) * 3 * 2);
 	for (int y = 0; y < h; y++) {
@@ -209,9 +215,12 @@ static void quantize(const img_frames_t *f, const uint8_t *rgb, uint8_t *idx, in
 			int r = clamp255(s[0] + (e[0] + 8) / 16);
 			int g = clamp255(s[1] + (e[1] + 8) / 16);
 			int b = clamp255(s[2] + (e[2] + 8) / 16);
-			int i = img_frames_lookup(f, (uint8_t)r, (uint8_t)g, (uint8_t)b);
-			if (i < 0)
+			int i;
+			if (levels) {
+				i = (cube_level(r, levels) * levels + cube_level(g, levels)) * levels + cube_level(b, levels);
+			} else if ((i = img_frames_lookup(f, (uint8_t)r, (uint8_t)g, (uint8_t)b)) < 0) {
 				i = nearest(pal, n, r, g, b);
+			}
 			idx[(size_t)y * w + x] = (uint8_t)i;
 			int q[3] = {r - pal[i * 3], g - pal[i * 3 + 1], b - pal[i * 3 + 2]};
 			for (int c = 0; c < 3; c++) {
@@ -232,6 +241,11 @@ static void quantize(const img_frames_t *f, const uint8_t *rgb, uint8_t *idx, in
 
 img_err_t img_encode_gif(img_frames_t *frames, const img_writer_t *w, img_gif_info_t *info)
 {
+	return img_encode_gif_levels(frames, w, 0, info);
+}
+
+img_err_t img_encode_gif_levels(img_frames_t *frames, const img_writer_t *w, unsigned levels, img_gif_info_t *info)
+{
 	size_t count = img_frames_count(frames);
 	if (count == 0)
 		return IMG_ERR_CORRUPT;
@@ -241,6 +255,27 @@ img_err_t img_encode_gif(img_frames_t *frames, const img_writer_t *w, img_gif_in
 
 	const uint8_t *pal;
 	size_t pal_len = img_frames_palette(frames, &pal);
+	// The frame store keeps the first 256 distinct colours, so a shorter
+	// palette is all of them: within the limit, keep it exact.
+	uint8_t cube[IMG_MAX_LEVELS * IMG_MAX_LEVELS * IMG_MAX_LEVELS * 3];
+	if (levels > IMG_MAX_LEVELS)
+		levels = IMG_MAX_LEVELS;
+	if (levels == 1)
+		levels = 2;
+	if (levels && pal_len <= levels * levels * levels)
+		levels = 0;
+	if (levels) {
+		uint8_t *c = cube;
+		for (unsigned r = 0; r < levels; r++)
+			for (unsigned g = 0; g < levels; g++)
+				for (unsigned b = 0; b < levels; b++) {
+					*c++ = (uint8_t)(r * 255 / (levels - 1));
+					*c++ = (uint8_t)(g * 255 / (levels - 1));
+					*c++ = (uint8_t)(b * 255 / (levels - 1));
+				}
+		pal = cube;
+		pal_len = levels * levels * levels;
+	}
 	int table_bits = 1;
 	while ((size_t)1 << table_bits < pal_len)
 		table_bits++;
@@ -302,7 +337,7 @@ img_err_t img_encode_gif(img_frames_t *frames, const img_writer_t *w, img_gif_in
 			out_byte(o, 0);
 		}
 
-		quantize(frames, rgb, idx, width, height, err);
+		quantize(frames, pal, pal_len, (int)levels, rgb, idx, width, height, err);
 		lzw_begin(z, o, min_size);
 		lzw_pixels(z, idx, px);
 		lzw_end(z);

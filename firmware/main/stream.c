@@ -50,6 +50,7 @@ static struct {
 	int fds[MAX_CLIENTS];
 	bool resume;
 	uint32_t interval_ms;
+	unsigned colors; // ?colors= or the stream_colors setting
 } s;
 
 static uint32_t fps_interval(int fps)
@@ -67,6 +68,18 @@ static void set_fps(int fps)
 	s.interval_ms = fps_interval(fps);
 	xSemaphoreGive(s.mu);
 	ESP_LOGI(TAG, "stream rate set to %u fps", (unsigned)(1000 / fps_interval(fps)));
+}
+
+static void set_colors(int colors)
+{
+	if (colors < 8)
+		colors = 8;
+	if (colors > 256)
+		colors = 256;
+	xSemaphoreTake(s.mu, portMAX_DELAY);
+	s.colors = (unsigned)colors;
+	xSemaphoreGive(s.mu);
+	ESP_LOGI(TAG, "stream colours set to at most %d", colors);
 }
 
 static void push(uint8_t *frame, size_t len)
@@ -100,6 +113,7 @@ static void encoder(void *arg)
 		uint8_t *frame = s.latest;
 		size_t len = s.latest_len;
 		uint32_t gen = s.gen;
+		unsigned colors = s.colors;
 		s.latest = NULL;
 		if (frame)
 			s.want = false;
@@ -108,7 +122,7 @@ static void encoder(void *arg)
 			continue; // dropped by a disconnect meanwhile; wait for the next push
 
 		display_live_frame_t *f = NULL;
-		esp_err_t err = display_live_encode(frame, len, &f);
+		esp_err_t err = display_live_encode(frame, len, colors, &f);
 		free(frame);
 		if (err != ESP_OK)
 			ESP_LOGW(TAG, "frame failed: %s", display_error_text(err));
@@ -136,6 +150,7 @@ static void expire(void *arg)
 	if (s.clients == 0) { // a client that reconnected just as the timer fired wins
 		s.resume = true;
 		s.interval_ms = fps_interval(settings_get()->stream_fps);
+		s.colors = settings_get()->stream_colors;
 	}
 	xSemaphoreGive(s.mu);
 	xTaskNotifyGive(s.task);
@@ -194,6 +209,12 @@ static void run(void *arg)
 static void client_connect(int fd)
 {
 	xSemaphoreTake(s.mu, portMAX_DELAY);
+	if (s.clients == 0) {
+		// A new stream starts from the settings (they may have changed
+		// since the last one); ?fps= and ?colors= apply on top.
+		s.interval_ms = fps_interval(settings_get()->stream_fps);
+		s.colors = settings_get()->stream_colors;
+	}
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		if (s.fds[i] < 0) {
 			s.fds[i] = fd;
@@ -240,10 +261,13 @@ static esp_err_t on_handshake(httpd_req_t *req)
 	if (full)
 		return ESP_FAIL;
 	client_connect(fd);
-	char q[32], v[8];
-	if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
-	    httpd_query_key_value(q, "fps", v, sizeof v) == ESP_OK)
-		set_fps(atoi(v));
+	char q[48], v[8];
+	if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK) {
+		if (httpd_query_key_value(q, "fps", v, sizeof v) == ESP_OK)
+			set_fps(atoi(v));
+		if (httpd_query_key_value(q, "colors", v, sizeof v) == ESP_OK)
+			set_colors(atoi(v));
+	}
 	ESP_LOGI(TAG, "stream client connected (fd %d)", fd);
 	return ESP_OK;
 }
@@ -276,6 +300,8 @@ static esp_err_t ws_handler(httpd_req_t *req)
 		buf[f.len] = 0;
 		if (strncmp((char *)buf, "fps=", 4) == 0)
 			set_fps(atoi((char *)buf + 4));
+		else if (strncmp((char *)buf, "colors=", 7) == 0)
+			set_colors(atoi((char *)buf + 7));
 	}
 	free(buf);
 	return ESP_OK;
@@ -287,6 +313,7 @@ esp_err_t stream_register(httpd_handle_t hd)
 	for (int i = 0; i < MAX_CLIENTS; i++)
 		s.fds[i] = -1;
 	s.interval_ms = fps_interval(settings_get()->stream_fps);
+	s.colors = settings_get()->stream_colors;
 	esp_timer_create_args_t t = {.callback = expire, .name = "stream_resume"};
 	if (!s.mu || esp_timer_create(&t, &s.pending) != ESP_OK ||
 	    xTaskCreate(run, "stream", 4096, NULL, 5, &s.task) != pdPASS ||

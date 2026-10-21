@@ -36,8 +36,8 @@ static const char *TAG = "http";
 static httpd_handle_t server, portal;
 static uint8_t last_on_brightness = 125; // the level /on restores
 
-extern const uint8_t testpage_start[] asm("_binary_testpage_html_start");
-extern const uint8_t testpage_end[] asm("_binary_testpage_html_end");
+extern const uint8_t testpage_start[] asm("_binary_test_html_start");
+extern const uint8_t testpage_end[] asm("_binary_test_html_end");
 extern const uint8_t configpage_start[] asm("_binary_config_html_start");
 extern const uint8_t configpage_end[] asm("_binary_config_html_end");
 
@@ -723,6 +723,7 @@ static esp_err_t h_health(httpd_req_t *req)
 	cJSON_AddNumberToObject(c, "height", s->panel_height);
 	cJSON_AddNumberToObject(c, "stream_fps", s->stream_fps);
 	cJSON_AddNumberToObject(c, "stream_resume_delay_ms", s->stream_resume_ms);
+	cJSON_AddNumberToObject(c, "stream_colors", s->stream_colors);
 	cJSON_AddBoolToObject(o, "panel_connected", display_connected());
 	cJSON_AddNumberToObject(o, "free_heap", heap_caps_get_free_size(MALLOC_CAP_8BIT));
 	return send_json(req, NULL, o);

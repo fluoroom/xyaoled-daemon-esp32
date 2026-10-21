@@ -24,6 +24,7 @@ typedef struct {
 	bool passthrough;
 	bool passthrough_partial; // experimental: pass partial/transparent frames
 	uint8_t stream_fps;
+	uint16_t stream_colors; // at most this many per stream frame (256: as Go)
 	uint16_t stream_resume_ms;
 	bool debug_ble;
 } settings_t;
