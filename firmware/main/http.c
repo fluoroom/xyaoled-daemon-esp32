@@ -189,6 +189,8 @@ static void read_field(mp_t *mp, char *out, size_t cap)
 static esp_err_t page(httpd_req_t *req, const uint8_t *start, const uint8_t *end)
 {
 	httpd_resp_set_type(req, "text/html; charset=utf-8");
+	// Revalidate: a page from before a firmware update must not linger.
+	httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 	return httpd_resp_send(req, (const char *)start, end - start);
 }
 
