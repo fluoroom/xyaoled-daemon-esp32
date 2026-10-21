@@ -878,6 +878,7 @@ static esp_err_t h_api_status(httpd_req_t *req)
 		cJSON_AddNumberToObject(st, "data_ms", ls.data_ms / n);
 		cJSON_AddNumberToObject(st, "max_send_ms", ls.max_send_ms);
 		cJSON_AddNumberToObject(st, "gif_bytes", ls.bytes / n);
+		cJSON_AddNumberToObject(st, "last_colors", ls.last_colors);
 	}
 
 	size_t total, used;

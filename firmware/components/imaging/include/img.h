@@ -87,6 +87,7 @@ typedef struct {
 	uint32_t total_ms; // sum of frame delays
 	uint32_t bytes;    // GIF size
 	bool static_image; // one frame: send with the static trailer
+	uint16_t src_colors; // distinct colours in the frames, 257 for more than 256
 } img_gif_info_t;
 
 // img_encode_gif writes the GIF the panel plays. One frame becomes a still

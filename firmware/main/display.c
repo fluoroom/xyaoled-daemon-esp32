@@ -166,6 +166,7 @@ typedef struct {
 	bool static_image;
 	uint32_t frames, total_ms, bytes;
 	uint32_t decode_us, encode_us; // time decode_encode took
+	uint16_t src_colors;
 } encoded_t;
 
 static void encoded_free(encoded_t *e)
@@ -228,6 +229,7 @@ static esp_err_t decode_encode(const img_reader_t *r, display_kind_t kind, bool 
 			out->frames = gi.frames;
 			out->total_ms = gi.total_ms;
 			out->bytes = gi.bytes;
+			out->src_colors = gi.src_colors;
 			ESP_LOGI(TAG, "%ux%u %s → %u frame(s), %u ms, %u bytes", (unsigned)info.src_width,
 				 (unsigned)info.src_height,
 				 info.format == IMG_FMT_GIF ? "GIF" : info.format == IMG_FMT_PNG ? "PNG" : "JPEG",
@@ -443,6 +445,7 @@ esp_err_t display_live_send(display_live_frame_t *f)
 			st->select_ms += sel;
 			st->data_ms += data;
 			st->bytes += f->e.bytes;
+			st->last_colors = f->e.src_colors;
 			if (sent_ms > st->max_send_ms)
 				st->max_send_ms = sent_ms;
 			taskEXIT_CRITICAL(&live_lock);

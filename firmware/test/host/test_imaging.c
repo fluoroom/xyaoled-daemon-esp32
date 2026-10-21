@@ -300,6 +300,44 @@ static void test_encode_levels(void)
 		CHECK(n < full_len, "%u levels: %zu bytes, not under %zu", levels, n, full_len);
 		CHECK(err < 255.0 / (levels - 1) / 4, "%u levels: block error %.1f", levels, err);
 	}
+	// A red-on-black drawing that a browser's anti-fingerprinting added
+	// slight noise to: more than 8 colours, but each pixel must stay near
+	// its own (no yellow, magenta or white dots from the cube).
+	img_frames_t *dr = img_frames_new_mem(&panel, 1);
+	uint32_t seed = 1;
+	for (size_t p = 0; p < 96 * 16; p++) {
+		bool red = (p % 96 / 3 + p / 96) % 4 == 0;
+		int c[3] = {red ? 255 : 0, red ? 59 : 0, red ? 48 : 0};
+		seed = seed * 1103515245 + 12345;
+		if (seed >> 28 == 0) // ~1 pixel in 16
+			for (int k = 0; k < 3; k++)
+				c[k] = c[k] + (int)(seed >> (8 + k * 4) & 7) - 3 < 0 ? 0 : c[k] + (int)(seed >> (8 + k * 4) & 7) - 3 > 255 ? 255 : c[k] + (int)(seed >> (8 + k * 4) & 7) - 3;
+		for (int k = 0; k < 3; k++)
+			src[p * 3 + k] = (uint8_t)c[k];
+	}
+	img_frames_add(dr, src, 0);
+	const uint8_t *pal;
+	CHECK(img_frames_palette(dr, &pal) > 27, "drawing has only %zu colours", img_frames_palette(dr, &pal));
+	for (unsigned levels = 2; levels <= 3; levels++) {
+		mem_sink_t sink = {0};
+		img_writer_t w = {sink_write, &sink};
+		CHECK(img_encode_gif_levels(dr, &w, levels, NULL) == IMG_OK, "drawing encode");
+		img_frames_t *back = img_frames_new_mem(&panel, 1);
+		img_info_t info;
+		CHECK(img_decode_mem(sink.buf, sink.len, back, &info) == IMG_OK, "drawing re-decode");
+		img_frames_get(back, 0, cut, NULL);
+		int worst = 0;
+		for (size_t i = 0; i < fb; i++)
+			if (abs(cut[i] - src[i]) > worst)
+				worst = abs(cut[i] - src[i]);
+		// To a kept colour that may itself be off by up to 3; the cube moved
+		// them by ~200 (G 59 -> 255).
+		CHECK(worst <= 6, "%u levels: a drawing pixel moved by %d", levels, worst);
+		free(sink.buf);
+		img_frames_free(back);
+	}
+	img_frames_free(dr);
+
 	// 7 colours fit in 8: kept exact, as without a limit.
 	encode_levels("png_small.png", 0, full);
 	encode_levels("png_small.png", 2, cut);

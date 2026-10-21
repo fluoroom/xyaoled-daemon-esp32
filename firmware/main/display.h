@@ -73,6 +73,7 @@ typedef struct {
 	uint32_t frames, bytes;
 	uint64_t decode_us, encode_us;
 	uint32_t select_ms, data_ms, max_send_ms;
+	uint16_t last_colors; // distinct colours in the last frame received (257: more than 256)
 } display_live_stats_t;
 void display_live_stats(display_live_stats_t *out);
 bool display_streaming(void);

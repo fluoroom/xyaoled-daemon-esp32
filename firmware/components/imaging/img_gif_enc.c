@@ -255,16 +255,51 @@ img_err_t img_encode_gif_levels(img_frames_t *frames, const img_writer_t *w, uns
 
 	const uint8_t *pal;
 	size_t pal_len = img_frames_palette(frames, &pal);
-	// The frame store keeps the first 256 distinct colours, so a shorter
-	// palette is all of them: within the limit, keep it exact.
+	// Within the limit, keep the colours exact. Over it with 256 colours
+	// or fewer in all (a drawing, a logo, a canvas a browser added noise
+	// to): its most used colours, the rest mapped to the nearest of them
+	// without dithering. Over 256 (photos, video): a uniform cube.
 	uint8_t cube[IMG_MAX_LEVELS * IMG_MAX_LEVELS * IMG_MAX_LEVELS * 3];
+	uint8_t *remap = NULL; // palette index -> index into pal, for the most-used palette
 	if (levels > IMG_MAX_LEVELS)
 		levels = IMG_MAX_LEVELS;
 	if (levels == 1)
 		levels = 2;
 	if (levels && pal_len <= levels * levels * levels)
 		levels = 0;
-	if (levels) {
+	bool overflow;
+	const uint32_t *uses = img_frames_uses(frames, &overflow);
+	uint16_t src_colors = overflow ? 257 : (uint16_t)pal_len;
+
+	if (levels && !overflow) {
+		size_t n = levels * levels * levels;
+		if (!(remap = malloc(256)))
+			return IMG_ERR_NOMEM;
+		// Pick the n most used, in palette order (selection: n and the
+		// palette are small).
+		bool chosen[256] = {0};
+		for (size_t k = 0; k < n; k++) {
+			size_t best = 0;
+			bool any = false;
+			for (size_t i = 0; i < pal_len; i++)
+				if (!chosen[i] && (!any || uses[i] > uses[best])) {
+					best = i;
+					any = true;
+				}
+			chosen[best] = true;
+		}
+		uint8_t *c = cube;
+		for (size_t i = 0; i < pal_len; i++)
+			if (chosen[i]) {
+				memcpy(c, pal + i * 3, 3);
+				c += 3;
+			}
+		for (size_t i = 0; i < pal_len; i++)
+			remap[i] = (uint8_t)nearest(cube, n, pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]);
+		pal = cube;
+		pal_len = n;
+		levels = 0;
+	} else if (levels) {
 		uint8_t *c = cube;
 		for (unsigned r = 0; r < levels; r++)
 			for (unsigned g = 0; g < levels; g++)
@@ -337,7 +372,12 @@ img_err_t img_encode_gif_levels(img_frames_t *frames, const img_writer_t *w, uns
 			out_byte(o, 0);
 		}
 
-		quantize(frames, pal, pal_len, (int)levels, rgb, idx, width, height, err);
+		if (remap) {
+			for (size_t p = 0; p < px; p++)
+				idx[p] = remap[img_frames_lookup(frames, rgb[p * 3], rgb[p * 3 + 1], rgb[p * 3 + 2])];
+		} else {
+			quantize(frames, pal, pal_len, (int)levels, rgb, idx, width, height, err);
+		}
 		lzw_begin(z, o, min_size);
 		lzw_pixels(z, idx, px);
 		lzw_end(z);
@@ -353,8 +393,10 @@ img_err_t img_encode_gif_levels(img_frames_t *frames, const img_writer_t *w, uns
 		info->total_ms = total_cs * 10;
 		info->bytes = o->total;
 		info->static_image = still;
+		info->src_colors = src_colors;
 	}
 done:
+	free(remap);
 	free(rgb);
 	free(idx);
 	free(err);

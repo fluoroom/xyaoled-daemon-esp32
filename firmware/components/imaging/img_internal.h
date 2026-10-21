@@ -65,5 +65,8 @@ img_err_t img_frames_add_canvas(img_frames_t *f, const uint8_t *canvas, uint16_t
 
 // Shared palette of the stored frames.
 size_t img_frames_palette(const img_frames_t *f, const uint8_t **rgb);
+// Pixels using each palette colour, and whether some colour did not fit
+// (more than 256 in all).
+const uint32_t *img_frames_uses(const img_frames_t *f, bool *overflow);
 // Index of an exact palette colour, or -1.
 int img_frames_lookup(const img_frames_t *f, uint8_t r, uint8_t g, uint8_t b);

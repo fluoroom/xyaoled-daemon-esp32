@@ -17,6 +17,8 @@ struct img_frames {
 	uint8_t palette[256 * 3];
 	size_t palette_len;
 	uint16_t hash[HASH_SLOTS]; // palette index + 1, 0 when empty
+	uint32_t uses[256];        // pixels of each palette colour, in all frames
+	bool overflow;             // some colour did not fit in the palette
 };
 
 static img_frames_t *frames_new(const img_target_t *target, size_t max_frames)
@@ -87,6 +89,8 @@ int img_frames_lookup(const img_frames_t *f, uint8_t r, uint8_t g, uint8_t b)
 	}
 }
 
+// palette_add counts a pixel of colour r, g, b, adding the colour while
+// the palette has room.
 static void palette_add(img_frames_t *f, uint8_t r, uint8_t g, uint8_t b)
 {
 	uint32_t key = (uint32_t)r << 16 | (uint32_t)g << 8 | b;
@@ -96,12 +100,25 @@ static void palette_add(img_frames_t *f, uint8_t r, uint8_t g, uint8_t b)
 		if (slot == 0)
 			break;
 		const uint8_t *p = f->palette + (slot - 1) * 3;
-		if (p[0] == r && p[1] == g && p[2] == b)
+		if (p[0] == r && p[1] == g && p[2] == b) {
+			f->uses[slot - 1]++;
 			return;
+		}
+	}
+	if (f->palette_len == 256) {
+		f->overflow = true;
+		return;
 	}
 	uint8_t *p = f->palette + f->palette_len * 3;
 	p[0] = r, p[1] = g, p[2] = b;
+	f->uses[f->palette_len] = 1;
 	f->hash[h] = (uint16_t)++f->palette_len;
+}
+
+const uint32_t *img_frames_uses(const img_frames_t *f, bool *overflow)
+{
+	*overflow = f->overflow;
+	return f->uses;
 }
 
 size_t img_frames_palette(const img_frames_t *f, const uint8_t **rgb)
@@ -139,8 +156,9 @@ img_err_t img_frames_add(img_frames_t *f, const uint8_t *rgb, uint16_t delay_cs)
 	}
 	f->delays[f->count++] = delay_cs;
 
-	// Shared palette: the first 256 distinct colours, in the order met.
-	for (size_t i = 0; i < f->frame_bytes && f->palette_len < 256; i += 3)
+	// Shared palette: the first 256 distinct colours, in the order met,
+	// with how often each is used.
+	for (size_t i = 0; i < f->frame_bytes; i += 3)
 		palette_add(f, rgb[i], rgb[i + 1], rgb[i + 2]);
 	return IMG_OK;
 }
