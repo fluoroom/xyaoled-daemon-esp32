@@ -185,3 +185,8 @@ iniciar sesión), el orden que propongo:
    webcam.
 5. Medir cuánto tarda en subir un GIF grande y cuántos fps da el stream,
    comparado con el daemon Go (~7 fps).
+6. Recorrer `/config` en el navegador: estado, escaneo de redes, guardar
+   ajustes, exportar e importar. Su API pasó los tests en QEMU, pero la
+   interfaz en sí (el JavaScript de la página) nunca corrió en un
+   navegador: para eso tendría que haber abierto Chrome o Firefox, que
+   escriben en tu home, y me pediste no tocar nada fuera de esta carpeta.
