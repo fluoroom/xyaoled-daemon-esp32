@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XYAOLED Config</title>
+<style>
+:root{--bg:#f6f6f4;--card:#fff;--fg:#1a1a1a;--muted:#666;--line:#ddd;--accent:#1f6feb;--ok:#1a7f37;--err:#cf222e;--warn:#9a6700}
+@media (prefers-color-scheme:dark){:root{--bg:#111;--card:#1b1b1b;--fg:#e6e6e6;--muted:#999;--line:#333;--accent:#4c8dff;--ok:#3fb950;--err:#ff6b6b;--warn:#d29922}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+main{max-width:640px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.sub a{color:var(--accent)}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 10px}
+label{display:block;font-weight:600;font-size:13px;margin:12px 0 4px}
+.hint{font-weight:400;color:var(--muted)}
+.restart{font-weight:400;font-size:12px;color:var(--warn);margin-left:6px}
+input[type=text],input[type=password],input[type=number],select{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font-size:14px}
+input[type=file]{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.check{display:flex;gap:8px;align-items:center;font-weight:600;font-size:13px;margin:12px 0 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center}
+button{padding:9px 14px;border:0;border-radius:6px;background:var(--accent);color:#fff;font-size:14px;cursor:pointer}
+button.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button.danger{background:transparent;color:var(--err);border:1px solid var(--err)}
+button:disabled{opacity:.5;cursor:wait}
+dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:14px}
+dt{color:var(--muted)}dd{margin:0;font-variant-numeric:tabular-nums;word-break:break-word}
+.msg{font-size:14px;margin-top:10px;min-height:1.4em}
+.msg.ok{color:var(--ok)}.msg.err{color:var(--err)}.msg.warn{color:var(--warn)}
+#nets{list-style:none;margin:10px 0 0;padding:0;max-height:220px;overflow:auto}
+#nets li{display:flex;justify-content:space-between;padding:7px 8px;border-radius:6px;cursor:pointer}
+#nets li:hover,#nets li.sel{background:var(--bg)}
+#nets .rssi{color:var(--muted);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+td,th{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);word-break:break-all}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);margin-right:6px}
+.dot.on{background:var(--ok)}.dot.off{background:var(--err)}
+@media (max-width:480px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<h1>XYAOLED configuration</h1>
+<p class="sub">Settings are saved on the board. <a href="/test">Test page</a></p>
+
+<section>
+<h2>Status</h2>
+<dl id="status"><dt>Loading</dt><dd>…</dd></dl>
+</section>
+
+<section>
+<h2>Wi-Fi</h2>
+<p class="hint" id="wifi-now"></p>
+<div class="row"><button id="scan" class="secondary">Scan networks</button></div>
+<ul id="nets"></ul>
+<label for="w-ssid">Network</label>
+<input type="text" id="w-ssid" autocomplete="off" maxlength="32">
+<label for="w-pass">Password <span class="hint">(empty for an open network)</span></label>
+<input type="password" id="w-pass" autocomplete="new-password" maxlength="63">
+<div class="row"><button id="w-connect">Connect</button></div>
+<div class="msg" id="w-msg"></div>
+</section>
+
+<section>
+<h2>Settings</h2>
+<form id="form" autocomplete="off">
+<div class="grid">
+<div><label for="panel_width">Panel width <span class="hint" data-hint="panel_width"></span></label><input type="number" id="panel_width" min="1" max="256"></div>
+<div><label for="panel_height">Panel height <span class="hint" data-hint="panel_height"></span></label><input type="number" id="panel_height" min="1" max="64"></div>
+</div>
+<label for="panel_match">Connect to the panel by</label>
+<select id="panel_match"><option value="name">Name (first match)</option><option value="mac">MAC address</option></select>
+<div class="grid">
+<div><label for="panel_name">Name contains <span class="hint" data-hint="panel_name"></span></label><input type="text" id="panel_name" maxlength="23"></div>
+<div><label for="panel_mac">MAC <span class="hint">AA:BB:CC:DD:EE:FF</span></label><input type="text" id="panel_mac" maxlength="17"></div>
+</div>
+<label class="check"><input type="checkbox" id="upside_down"> Upside down (rotate 180°)</label>
+<label class="check"><input type="checkbox" id="passthrough"> GIF passthrough <span class="hint">— send panel-sized GIFs as they are</span></label>
+<div class="grid">
+<div><label for="stream_fps">Stream fps <span class="hint">1–5, <span data-hint="stream_fps"></span></span></label><input type="number" id="stream_fps" min="1" max="5"></div>
+<div><label for="stream_resume_delay">Stream resume delay <span class="hint">s, <span data-hint="stream_resume_delay"></span></span></label><input type="number" id="stream_resume_delay" min="0" max="60" step="0.1"></div>
+</div>
+<label class="check"><input type="checkbox" id="debug_ble"> Log every BLE write and notification</label>
+<div class="grid">
+<div><label for="hostname">Host name <span class="hint">.local</span></label><input type="text" id="hostname" maxlength="31"></div>
+<div><label for="http_port">HTTP port <span class="hint" data-hint="http_port"></span></label><input type="number" id="http_port" min="1" max="65535"></div>
+</div>
+<div class="row"><button type="submit">Save</button><button type="button" id="restart2" class="secondary" hidden>Restart now</button></div>
+<div class="msg" id="f-msg"></div>
+</form>
+</section>
+
+<section>
+<h2>Backup</h2>
+<p class="hint">The export includes the Wi-Fi password.</p>
+<div class="row"><button id="export" class="secondary">Export config</button></div>
+<label for="imp">Import a config file</label>
+<input type="file" id="imp" accept="application/json,.json">
+<div id="diff"></div>
+<div class="row"><button id="apply" hidden>Apply import</button></div>
+<div class="msg" id="i-msg"></div>
+</section>
+
+<section>
+<h2>Device</h2>
+<div class="row"><button id="restart" class="secondary">Restart</button><button id="reset" class="danger">Reset to defaults</button></div>
+<div class="msg" id="d-msg"></div>
+</section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const FIELDS = ['panel_width','panel_height','panel_match','panel_name','panel_mac','upside_down','passthrough','stream_fps','stream_resume_delay','debug_ble','hostname','http_port'];
+let current = {}, restartKeys = [], pending = null;
+
+function msg(el, text, cls) { el.textContent = text; el.className = 'msg ' + (cls || ''); }
+
+async function api(url, init) {
+  const r = await fetch(url, init);
+  const text = await r.text();
+  let body; try { body = JSON.parse(text); } catch { body = {error: text}; }
+  if (!r.ok) throw new Error(body.error || text || r.status);
+  return body;
+}
+const post = (url, obj) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(obj || {})});
+
+function fmtUptime(s) { const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60; return h ? `${h} h ${m} min` : `${m} min ${s % 60} s`; }
+function kb(n) { return Math.round(n / 1024) + ' KB'; }
+
+async function refreshStatus() {
+  try {
+    const s = await api('/api/status');
+    const w = s.wifi, p = s.panel;
+    const dot = on => `<span class="dot ${on ? 'on' : 'off'}"></span>`;
+    const rows = [
+      ['Firmware', s.version], ['Uptime', fmtUptime(s.uptime_s)],
+      ['Wi-Fi', dot(w.state === 'connected') + (w.state === 'connected' ? `${w.ssid} (${w.rssi} dBm)` : w.state + (w.reason ? ' — ' + w.reason : ''))],
+      ['Address', w.ip ? `${w.ip} · ${w.hostname}.local` : '—'],
+      ['Setup portal', w.ap_active ? 'open' : 'closed'],
+      ['Panel', dot(p.connected) + (p.connected ? `connected ${p.address}` : 'not connected') + (p.streaming ? ' · streaming' : '')],
+      ['Brightness', p.brightness],
+      ['Free memory', `${kb(s.free_heap)} (lowest ${kb(s.min_free_heap)}, largest block ${kb(s.largest_block)})`],
+      ['Scratch', `${kb(s.scratch.used)} of ${kb(s.scratch.total)} used`],
+    ];
+    $('status').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    $('wifi-now').textContent = w.ssid ? `Saved network: ${w.ssid}` : 'No network saved.';
+    return s;
+  } catch (e) { return null; }
+}
+
+async function loadConfig() {
+  const c = await api('/api/config');
+  current = c.settings; restartKeys = c.restart_keys;
+  for (const k of FIELDS) {
+    const el = $(k);
+    if (el.type === 'checkbox') el.checked = !!current[k]; else el.value = current[k];
+    const lab = document.querySelector(`label[for=${k}]`) || el.closest('label');
+    if (restartKeys.includes(k) && lab && !lab.querySelector('.restart')) lab.insertAdjacentHTML('beforeend', '<span class="restart">↻ restart</span>');
+  }
+  for (const h of document.querySelectorAll('[data-hint]')) {
+    const d = c.defaults[h.dataset.hint];
+    if (d !== undefined) h.textContent = 'default ' + d;
+  }
+  if (!$('w-ssid').value) $('w-ssid').value = current.wifi_ssid || '';
+  $('w-pass').placeholder = c.wifi_password_set ? '(saved)' : '';
+}
+
+function formValues() {
+  const out = {};
+  for (const k of FIELDS) {
+    const el = $(k);
+    let v = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value.trim();
+    if (v !== current[k]) out[k] = v;
+  }
+  return out;
+}
+
+$('form').onsubmit = async e => {
+  e.preventDefault();
+  const changes = formValues();
+  if (!Object.keys(changes).length) return msg($('f-msg'), 'Nothing changed.');
+  try {
+    const r = await post('/api/config', changes);
+    await loadConfig();
+    $('restart2').hidden = !r.restart_required;
+    msg($('f-msg'), r.restart_required ? 'Saved. Restart to apply the marked settings.' : 'Saved and applied.', r.restart_required ? 'warn' : 'ok');
+  } catch (err) { msg($('f-msg'), err.message, 'err'); }
+};
+
+// Wi-Fi
+$('scan').onclick = async () => {
+  $('scan').disabled = true; $('nets').innerHTML = '<li>Scanning…</li>';
+  try {
+    const nets = await api('/api/wifi/scan');
+    $('nets').innerHTML = '';
+    for (const n of nets) {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${n.secure ? '🔒 ' : ''}</span><span class="rssi">${n.rssi} dBm</span>`;
+      li.firstChild.append(n.ssid);
+      li.onclick = () => { $('w-ssid').value = n.ssid; $('w-pass').focus(); for (const x of $('nets').children) x.classList.toggle('sel', x === li); };
+      $('nets').append(li);
+    }
+    if (!nets.length) $('nets').innerHTML = '<li>No networks found</li>';
+  } catch (err) { $('nets').innerHTML = `<li>Scan failed: ${err.message}</li>`; }
+  $('scan').disabled = false;
+};
+
+$('w-connect').onclick = async () => {
+  const ssid = $('w-ssid').value.trim(), password = $('w-pass').value;
+  if (!ssid) return msg($('w-msg'), 'Choose a network.', 'err');
+  $('w-connect').disabled = true;
+  try {
+    await post('/api/wifi/connect', {ssid, password});
+    msg($('w-msg'), `Connecting to ${ssid}…`);
+    // The access point may switch channel to follow the router and drop
+    // this device for a moment: keep polling through errors.
+    const until = Date.now() + 40000;
+    while (Date.now() < until) {
+      await new Promise(r => setTimeout(r, 1500));
+      const s = await refreshStatus();
+      if (!s) { msg($('w-msg'), `Connecting to ${ssid}… (reconnecting to the board)`); continue; }
+      if (s.wifi.trying) continue;
+      if (s.wifi.state === 'connected' && s.wifi.ssid === ssid) {
+        const port = location.port ? ':' + location.port : '';
+        $('w-msg').className = 'msg ok';
+        $('w-msg').innerHTML = `Connected. The board is at <a href="http://${s.wifi.ip}${port}/config">http://${s.wifi.ip}${port}</a> and <a href="http://${s.wifi.hostname}.local${port}/config">http://${s.wifi.hostname}.local${port}</a>. The setup network closes in a few seconds; rejoin your usual network.`;
+        await loadConfig();
+        break;
+      }
+      msg($('w-msg'), `Could not connect: ${s.wifi.reason || s.wifi.state}.`, 'err');
+      break;
+    }
+  } catch (err) { msg($('w-msg'), err.message, 'err'); }
+  $('w-connect').disabled = false;
+};
+
+// Backup
+$('export').onclick = () => { location.href = '/api/config/export'; };
+
+$('imp').onchange = async () => {
+  pending = null; $('apply').hidden = true; $('diff').innerHTML = ''; msg($('i-msg'), '');
+  const file = $('imp').files[0];
+  if (!file) return;
+  try { pending = JSON.parse(await file.text()); } catch { return msg($('i-msg'), 'Not a JSON file.', 'err'); }
+  if (typeof pending !== 'object' || Array.isArray(pending) || !pending) return msg($('i-msg'), 'Not a config file.', 'err');
+  const rows = [];
+  for (const [k, v] of Object.entries(pending)) {
+    if (k === 'version') continue;
+    if (k === 'wifi_password') { rows.push([k, '•••', v ? '(set)' : '(none)']); continue; }
+    const old = k in current ? current[k] : '—';
+    if (old !== v) rows.push([k, String(old), String(v)]);
+  }
+  $('diff').innerHTML = rows.length ? '<table><tr><th>Setting</th><th>Now</th><th>Imported</th></tr>' + rows.map(r => '<tr>' + r.map(c => `<td>${c.replace(/</g, '&lt;')}</td>`).join('') + '</tr>').join('') + '</table>' : '<p class="hint">No differences.</p>';
+  $('apply').hidden = false;
+};
+
+$('apply').onclick = async () => {
+  try {
+    const r = await post('/api/config/import', pending);
+    await loadConfig();
+    const unk = r.unknown_keys && r.unknown_keys.length ? ` Ignored unknown keys: ${r.unknown_keys.join(', ')}.` : '';
+    msg($('i-msg'), (r.restart_required ? 'Imported. Restart to apply the marked settings.' : 'Imported and applied.') + unk, r.restart_required ? 'warn' : 'ok');
+    $('restart2').hidden = !r.restart_required;
+    $('apply').hidden = true;
+  } catch (err) { msg($('i-msg'), 'Import rejected, nothing changed: ' + err.message, 'err'); }
+};
+
+// Device
+async function restart() {
+  try { await post('/api/restart'); msg($('d-msg'), 'Restarting… this page reloads in 10 s.', 'warn'); setTimeout(() => location.reload(), 10000); }
+  catch (err) { msg($('d-msg'), err.message, 'err'); }
+}
+$('restart').onclick = restart;
+$('restart2').onclick = restart;
+$('reset').onclick = async () => {
+  if (!confirm('Erase every setting, the saved Wi-Fi network included, and restart?')) return;
+  try { await post('/api/config/reset'); msg($('d-msg'), 'Reset. The board restarts with the setup network.', 'warn'); }
+  catch (err) { msg($('d-msg'), err.message, 'err'); }
+};
+
+loadConfig().catch(err => msg($('f-msg'), 'Could not load settings: ' + err.message, 'err'));
+refreshStatus();
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>

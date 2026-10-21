@@ -1,0 +1,55 @@
+menu "XYAOLED"
+
+    config XY_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            Network to join at first boot. Empty: start the setup portal.
+            Settings saved from /config take precedence.
+
+    config XY_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config XY_AP_SSID
+        string "Setup portal network name"
+        default "xyaoled-setup"
+
+    config XY_AP_PASSWORD
+        string "Setup portal password (WPA2, 8 characters or more)"
+        default "xyaoledaemon"
+
+    config XY_HOSTNAME
+        string "mDNS host name"
+        default "xyaoled"
+
+    config XY_HTTP_PORT
+        int "HTTP port"
+        range 1 65535
+        default 11001
+
+    config XY_PANEL_WIDTH
+        int "Panel width"
+        range 1 256
+        default 96
+
+    config XY_PANEL_HEIGHT
+        int "Panel height"
+        range 1 64
+        default 16
+
+    config XY_PANEL_NAME
+        string "Connect to the first panel whose name contains"
+        default "XYAO"
+
+    config XY_STREAM_FPS
+        int "Default /stream frame rate"
+        range 1 5
+        default 4
+
+    config XY_STREAM_RESUME_MS
+        int "Milliseconds after the last /stream client leaves before the playlist resumes"
+        range 0 60000
+        default 1500
+
+endmenu
