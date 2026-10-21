@@ -148,23 +148,27 @@ void stream_on_close(int fd)
 		ESP_LOGI(TAG, "stream client disconnected (fd %d)", fd);
 }
 
+// on_handshake runs once the WebSocket handshake is answered (ESP-IDF v6
+// no longer calls the URI handler for it).
+static esp_err_t on_handshake(httpd_req_t *req)
+{
+	int fd = httpd_req_to_sockfd(req);
+	xSemaphoreTake(s.mu, portMAX_DELAY);
+	bool full = s.clients >= MAX_CLIENTS;
+	xSemaphoreGive(s.mu);
+	if (full)
+		return ESP_FAIL;
+	client_connect(fd);
+	char q[32], v[8];
+	if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
+	    httpd_query_key_value(q, "fps", v, sizeof v) == ESP_OK)
+		set_fps(atoi(v));
+	ESP_LOGI(TAG, "stream client connected (fd %d)", fd);
+	return ESP_OK;
+}
+
 static esp_err_t ws_handler(httpd_req_t *req)
 {
-	if (req->method == HTTP_GET) {
-		int fd = httpd_req_to_sockfd(req);
-		xSemaphoreTake(s.mu, portMAX_DELAY);
-		bool full = s.clients >= MAX_CLIENTS;
-		xSemaphoreGive(s.mu);
-		if (full)
-			return ESP_FAIL;
-		client_connect(fd);
-		char q[32], v[8];
-		if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
-		    httpd_query_key_value(q, "fps", v, sizeof v) == ESP_OK)
-			set_fps(atoi(v));
-		ESP_LOGI(TAG, "stream client connected (fd %d)", fd);
-		return ESP_OK;
-	}
 	httpd_ws_frame_t f = {0};
 	esp_err_t err = httpd_ws_recv_frame(req, &f, 0);
 	if (err != ESP_OK)
@@ -206,6 +210,10 @@ esp_err_t stream_register(httpd_handle_t hd)
 	if (!s.mu || esp_timer_create(&t, &s.pending) != ESP_OK ||
 	    xTaskCreate(run, "stream", 6144, NULL, 5, &s.task) != pdPASS)
 		return ESP_ERR_NO_MEM;
-	httpd_uri_t u = {.uri = "/stream", .method = HTTP_GET, .handler = ws_handler, .is_websocket = true};
+	httpd_uri_t u = {.uri = "/stream",
+			 .method = HTTP_GET,
+			 .handler = ws_handler,
+			 .is_websocket = true,
+			 .ws_post_handshake_cb = on_handshake};
 	return httpd_register_uri_handler(hd, &u);
 }

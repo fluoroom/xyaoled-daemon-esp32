@@ -11,6 +11,7 @@ is ticked only when it works on the board, not when it compiles:
 | Mark | Meaning |
 |---|---|
 | `[x]` | works on the board |
+| `[ ] 🖥️` | the firmware does it in QEMU, with a simulated panel and Ethernet instead of the radio (`firmware/test/qemu`) |
 | `[ ] 🧪` | written, and its logic passes the host tests (`make -C firmware/test/host`) |
 | `[ ] 🔨` | written and builds; not run yet |
 | `[ ]` | not written |
@@ -143,6 +144,23 @@ make -C firmware/test/host verify-go  # also decode the encoder's GIFs with Go's
 make -C firmware/test/host fixtures   # regenerate fixtures from the Go reference logic
 ```
 
+QEMU integration tests: the firmware built with `CONFIG_XY_QEMU`
+(Ethernet instead of Wi-Fi, an in-process simulated panel instead of BLE,
+`/api/sim/*` to fetch what the panel received) runs in Espressif's QEMU;
+`test_api.py` calls every endpoint and compares the panel's GIFs with the
+Go reference frames:
+
+```bash
+. ~/esp/esp-idf-v6.0.3/export.sh
+QEMU=/path/to/qemu-system-riscv32 firmware/test/qemu/run.sh &   # serial log: firmware/build-qemu/serial.log
+python firmware/test/qemu/test_api.py                          # IDF's Python: it has websockets
+```
+
+QEMU comes from `idf_tools.py install qemu-riscv32` (or the release listed
+in `tools/tools.json`; on this machine it is unpacked in
+`firmware/build/qemu`). Its build differs from the board's in
+`firmware/sdkconfig.qemu`.
+
 First boot: with no Wi-Fi saved the board opens `xyaoled-setup` (password
 `xyaoledaemon`); join it and the phone or laptop opens the setup page (or go
 to `http://192.168.4.1`). Afterwards the board is at
@@ -160,8 +178,10 @@ to `http://192.168.4.1`). Afterwards the board is at
 - [x] Firmware builds (1.17 MB app, 22% of the partition free)
 - [ ] Flashed and boots on the board; heap measured at boot, with Wi-Fi up, with BLE up (logged by `main.c`)
 - [x] Partition table: one 1.5 MB app (no OTA) + NVS + 2.4 MB LittleFS scratch (builds)
-- [ ] 🔨 LittleFS mounted on `scratch` at `/scratch`, emptied at boot
+- [ ] 🖥️ LittleFS mounted on `scratch` at `/scratch`, emptied at boot
 - [x] Host test harness (`firmware/test/host`), fixtures generated from the Go logic
+- [x] QEMU build of the whole firmware with a simulated panel, and API tests against it (`firmware/test/qemu`)
+- [ ] 🖥️ Boots: free heap in QEMU (no radio) 314 KB at boot, 257 KB with HTTP up, 194 KB lowest under the API tests; flat across repeated requests (no leaks)
 
 ### 1. Configuration (Go: `config.go`, `.env`)
 
@@ -174,12 +194,12 @@ save is all or nothing, when changed from the `/config` page (section 5b).
 - [ ] 🔨 `HTTP_PORT` → `http_port` (11001); `HTTP_HOST` does not apply
 - [ ] 🔨 `UPSIDE_DOWN` → `upside_down`
 - [ ] 🔨 `DEBUG_BLE` → `debug_ble` (logs every write and notification)
-- [ ] 🔨 `STREAM_FPS` → `stream_fps` (default 4, 1–5)
-- [ ] 🔨 `STREAM_RESUME_DELAY` → `stream_resume_delay` (seconds, default 1.5)
+- [ ] 🖥️ `STREAM_FPS` → `stream_fps` (default 4, 1–5)
+- [ ] 🖥️ `STREAM_RESUME_DELAY` → `stream_resume_delay` (seconds, default 1.5)
 - [ ] 🔨 Panel matching: name substring (`XYAO`, the Go behaviour) or MAC (`panel_match`, `panel_name`, `panel_mac`). The Go `LED_PANEL_MAC` was read but never used.
-- [ ] 🔨 Startup log of the configuration
+- [ ] 🖥️ Startup log of the configuration
 - [ ] 🔨 New: mDNS name (`hostname`, default `xyaoled` → `xyaoled.local`)
-- [ ] 🔨 New: GIF passthrough on/off (`passthrough`, default on)
+- [ ] 🖥️ New: GIF passthrough on/off (`passthrough`, default on)
 
 ### 2. BLE driver (Go: `xyaoled/device.go`, `xyaoled/upload.go`)
 
@@ -212,21 +232,21 @@ are pure C and host-tested; `xy_panel` is the NimBLE side.
 
 ### 3. Display logic (Go: `display.go`)
 
-- [ ] 🔨 Connection monitor every 5 s; connects at boot without blocking the HTTP server
+- [ ] 🖥️ Connection monitor every 5 s; connects at boot without blocking the HTTP server
 - [ ] 🔨 Reconnect with exponential backoff 5 s → 60 s; brightness restored after it (saved, else 125 on the first connect and 80 after)
 - [ ] 🔨 Reconnect triggered by a send that fails on a dead connection
-- [ ] 🔨 Brightness saved (Go: `.brightness` file; here NVS) and restored
-- [ ] 🔨 Screen "off" = brightness ≤ 5: image sends refused
-- [ ] 🔨 Manual off flag: brightness changes refused until `/on`
-- [ ] 🔨 Level before `/off` remembered for `/on`
-- [ ] 🔨 Streaming flag: playlist sends refused (409) while `/stream` holds the panel
-- [ ] 🔨 Clear screen: black live frame, playlist kept
+- [ ] 🖥️ Brightness saved (Go: `.brightness` file; here NVS) and restored
+- [ ] 🖥️ Screen "off" = brightness ≤ 5: image sends refused
+- [ ] 🖥️ Manual off flag: brightness changes refused until `/on`
+- [ ] 🖥️ Level before `/off` remembered for `/on`
+- [ ] 🖥️ Streaming flag: playlist sends refused (409) while `/stream` holds the panel
+- [ ] 🖥️ Clear screen: black live frame, playlist kept
 - [ ] 🔨 Connect / disconnect on demand (`/uploadTest`); as in Go, the monitor reconnects after a disconnect
 
 ### 4. Image pipeline (Go: `display.go`)
 
-- [ ] 🔨 Upload bodies decoded in blocks as they arrive (source never stored, except passthrough candidates and `/uploadTest` files sent before the command)
-- [ ] 🔨 Scaled frames in the scratch partition; scratch files removed after each send
+- [ ] 🖥️ Upload bodies decoded in blocks as they arrive (source never stored, except passthrough candidates and `/uploadTest` files sent before the command)
+- [ ] 🖥️ Scaled frames in the scratch partition; scratch files removed after each send
 - [ ] 🧪 Frame limit from the free scratch space (`IMG_ERR_FULL`, a clear error)
 - [ ] 🧪 Format detection (PNG / JPEG / GIF)
 - [ ] 🧪 PNG decoder, streaming (pngle), alpha over black
@@ -250,7 +270,7 @@ are pure C and host-tested; `xy_panel` is the NimBLE side.
   - [ ] 🧪 no frame has a local colour table (the panel's decoder loses sync on them)
   - [ ] 🧪 no frame has a zero delay
   - [ ] 🧪 every frame covers the whole screen and has no transparency (see QUESTIONS.md)
-  - [ ] 🔨 passthrough enabled in the config
+  - [ ] 🖥️ passthrough enabled in the config
   - [ ] 🔨 the log says which path an upload took, and why passthrough was refused
 - [x] Go image tests (`display_test.go`) covered: still held 600 s, animation delays and loop, by the fixture tests
 
@@ -258,34 +278,34 @@ are pure C and host-tested; `xy_panel` is the NimBLE side.
 
 Same paths, form fields and status codes as the Go daemon.
 
-- [ ] 🔨 `esp_http_server` on port 11001
-- [ ] 🔨 `GET /health`: status and config (width, height, stream fps, resume delay); plus `panel_connected`, `free_heap`
-- [ ] 🔨 `GET /test`: the Go test page, embedded from the submodule
-- [ ] 🔨 `POST /display`, `/display-r`: JSON `{image: base64, type}`; type detected when empty (see QUESTIONS.md for `type` after `image`)
-- [ ] 🔨 `POST /upload`: multipart `file`; `GET` redirects to `/test`
-- [ ] 🔨 `POST /playlist`: repeated `file`; every item encoded before the playlist is replaced
-- [ ] 🔨 `POST /live`: multipart `file` or raw body; replies `ms`
-- [ ] 🔨 `GET /clear-screen`
-- [ ] 🔨 `GET /resume` (409 while streaming)
-- [ ] 🔨 `GET /clear` (409 while streaming)
-- [ ] 🔨 `POST /uploadTest`: every command and legacy name of the Go handler; `GET` redirects to `/test`
-- [ ] 🔨 `POST /uploadTestGif`: multipart `gif`; `GET` redirects to `/test`
-- [ ] 🔨 `GET /brightness/{n}`: clamped 5–125, 409 when manually off
-- [ ] 🔨 `GET /off`, `/on`
-- [ ] 🔨 `GET /power/on`, `/power/off`
-- [ ] 🔨 `GET /reconnect`: 202 `{"status":"reconnecting"}`
-- [ ] 🔨 Errors: 405 wrong method (server), 400 bad input, 409 streaming, 500 send failure, 503 panel not connected
+- [ ] 🖥️ `esp_http_server` on port 11001
+- [ ] 🖥️ `GET /health`: status and config (width, height, stream fps, resume delay); plus `panel_connected`, `free_heap`
+- [ ] 🖥️ `GET /test`: the Go test page, embedded from the submodule
+- [ ] 🖥️ `POST /display`, `/display-r`: JSON `{image: base64, type}`; type detected when empty (see QUESTIONS.md for `type` after `image`)
+- [ ] 🖥️ `POST /upload`: multipart `file`; `GET` redirects to `/test`
+- [ ] 🖥️ `POST /playlist`: repeated `file`; every item encoded before the playlist is replaced
+- [ ] 🖥️ `POST /live`: multipart `file` or raw body; replies `ms`
+- [ ] 🖥️ `GET /clear-screen`
+- [ ] 🖥️ `GET /resume` (409 while streaming)
+- [ ] 🖥️ `GET /clear` (409 while streaming)
+- [ ] 🖥️ `POST /uploadTest`: every command and legacy name of the Go handler; `GET` redirects to `/test`
+- [ ] 🖥️ `POST /uploadTestGif`: multipart `gif`; `GET` redirects to `/test`
+- [ ] 🖥️ `GET /brightness/{n}`: clamped 5–125, 409 when manually off
+- [ ] 🖥️ `GET /off`, `/on`
+- [ ] 🖥️ `GET /power/on`, `/power/off`
+- [ ] 🖥️ `GET /reconnect`: 202 `{"status":"reconnecting"}`
+- [ ] 🖥️ Errors: 405 wrong method (server), 400 bad input, 409 streaming, 500 send failure; 503 panel not connected (not exercised)
 - [ ] 🧪 Streaming multipart parser (boundaries split across reads, partial reads, truncation)
 - [ ] 🧪 Streaming parser for the `/display` JSON: base64 of `image` decoded in blocks; other keys skipped, escaped `\/` and line breaks accepted
-- [ ] 🔨 Startup log of the endpoint list
+- [ ] 🖥️ Startup log of the endpoint list
 - [ ] Requests are served one at a time: a long upload delays the others (see QUESTIONS.md)
 
 ### 5b. Config page (new)
 
-- [ ] 🔨 `GET /config`: the page, embedded in flash
-- [ ] 🔨 `GET /api/config`: every setting (Wi-Fi password left out), defaults, which keys need a restart
-- [ ] 🔨 `POST /api/config`: validated as a whole, saved, applied; replies `restart_required`
-- [ ] 🔨 `POST /api/restart`
+- [ ] 🖥️ `GET /config`: the page, embedded in flash
+- [ ] 🖥️ `GET /api/config`: every setting (Wi-Fi password left out), defaults, which keys need a restart
+- [ ] 🖥️ `POST /api/config`: validated as a whole, saved, applied; replies `restart_required`
+- [ ] 🖥️ `POST /api/restart`
 - [ ] 🔨 Settings on the page, each with its default and range, restart-only ones marked:
   - [ ] 🔨 Wi-Fi SSID and password (restart; also the Wi-Fi section, which connects at once)
   - [ ] 🔨 mDNS hostname (restart)
@@ -297,21 +317,21 @@ Same paths, form fields and status codes as the Go daemon.
   - [ ] 🔨 stream fps (1–5) and resume delay
   - [ ] 🔨 debug BLE logging
 - [ ] 🔨 "Reset to defaults" (erases the settings in NVS, restarts)
-- [ ] 🔨 Export: `GET /api/config/export` downloads `xyaoled-config.json` (password and brightness included, `"version": 1`)
-- [ ] 🔨 Import: `POST /api/config/import`; one bad value rejects the file, missing keys keep their value, unknown keys are reported
+- [ ] 🖥️ Export: `GET /api/config/export` downloads `xyaoled-config.json` (password and brightness included, `"version": 1`)
+- [ ] 🖥️ Import: `POST /api/config/import`; one bad value rejects the file, missing keys keep their value, unknown keys are reported
 - [ ] 🔨 Export / import buttons; import shows the changes before applying
 - [ ] 🔨 Import works from the setup portal too
 - [ ] 🔨 Status block: firmware version, uptime, IP, host name, Wi-Fi RSSI, portal, panel, brightness, heap, scratch use
 
 ### 6. Live stream (Go: `stream.go`)
 
-- [ ] 🔨 `WS /stream` (`CONFIG_HTTPD_WS_SUPPORT`)
+- [ ] 🖥️ `WS /stream` (`CONFIG_HTTPD_WS_SUPPORT`)
 - [ ] 🔨 Binary message = one image frame, decoded in RAM; frames over 64 KB close the socket (Go: 4 MB)
-- [ ] 🔨 Only the newest frame kept
-- [ ] 🔨 Rate limit `stream_fps`; `?fps=N` and text `fps=N` override (1–5)
+- [ ] 🖥️ Only the newest frame kept
+- [ ] 🖥️ Rate limit `stream_fps`; `?fps=N` and text `fps=N` override (1–5)
 - [ ] 🔨 Up to 4 clients counted; playlist blocked from the first connect until the resume
-- [ ] 🔨 Playlist resumes `stream_resume_delay` after the last disconnect; a reconnect within it keeps the live view
-- [ ] 🔨 One task sends frames and the resume (a late frame can't land after it)
+- [ ] 🖥️ Playlist resumes `stream_resume_delay` after the last disconnect; a reconnect within it keeps the live view
+- [ ] 🖥️ One task sends frames and the resume (a late frame can't land after it)
 - [ ] 🔨 Configured rate restored after the stream ends
 
 ### 7. Not ported
@@ -325,6 +345,7 @@ Same paths, form fields and status codes as the Go daemon.
 ### 8. New on the ESP32
 
 - [ ] 🔨 Wi-Fi reconnect with backoff (1 s → 30 s)
+- [ ] 🖥️ A 300-frame 120×20 animation through the full pipeline (~1.4 MB of frames in scratch), frames equal to Go's
 - [ ] 🔨 Credentials can also be set in `menuconfig` (skips the portal during development)
 - [ ] Measure Wi-Fi + BLE coexistence throughput (upload time and stream fps vs. the Go daemon's ~7 fps)
 

@@ -4,6 +4,7 @@
 
 # ESP-IDF
 firmware/build/
+firmware/build-qemu/
 firmware/managed_components/
 firmware/sdkconfig
 firmware/sdkconfig.old
@@ -12,3 +13,4 @@ firmware/dependencies.lock
 
 # Host tests
 firmware/test/host/build/
+__pycache__/

@@ -24,13 +24,16 @@ cd firmware
 idf.py build flash monitor
 ```
 
-Host tests, no board needed: `make -C firmware/test/host`.
+Host tests, no board needed: `make -C firmware/test/host`. Integration
+tests of the whole firmware in QEMU: `firmware/test/qemu`.
 
 See [docs/ESP32_PORT.md](docs/ESP32_PORT.md#setup) for the toolchain,
 serial-port setup and first boot (Wi-Fi setup portal).
 
 Status: the whole daemon is ported and builds; the hardware-independent
-parts pass the host tests; nothing has run on the board yet.
+parts pass the host tests, and the firmware passes the API tests in QEMU
+with a simulated panel. BLE with the real panel and Wi-Fi have not run on
+the board yet.
 
 ## Credits
 

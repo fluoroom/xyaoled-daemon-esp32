@@ -24,6 +24,9 @@
 #include "stream.h"
 #include "wifi.h"
 #include "xy_panel.h"
+#if CONFIG_XY_QEMU
+#include "xy_panel_sim.h"
+#endif
 
 static const char *TAG = "http";
 
@@ -885,6 +888,43 @@ static esp_err_t h_api_wifi_connect(httpd_req_t *req)
 	return send_json(req, "202 Accepted", o);
 }
 
+#if CONFIG_XY_QEMU
+// ---- QEMU build: what the simulated panel received ----
+
+static esp_err_t h_sim_last(httpd_req_t *req)
+{
+	uint32_t len;
+	uint8_t trailer[8], program;
+	const uint8_t *gif = xy_panel_sim_last(&len, trailer, &program);
+	if (!gif)
+		return send_text(req, "404 Not Found", "nothing uploaded yet");
+	char hex[17], prog[4];
+	for (int i = 0; i < 8; i++)
+		snprintf(hex + i * 2, 3, "%02x", trailer[i]);
+	snprintf(prog, sizeof prog, "%u", program);
+	httpd_resp_set_hdr(req, "X-Trailer", hex);
+	httpd_resp_set_hdr(req, "X-Program", prog);
+	httpd_resp_set_type(req, "image/gif");
+	return httpd_resp_send(req, (const char *)gif, len);
+}
+
+static esp_err_t h_sim_stats(httpd_req_t *req)
+{
+	xy_panel_sim_stats_t st;
+	xy_panel_sim_stats(&st);
+	cJSON *o = cJSON_CreateObject();
+	cJSON_AddNumberToObject(o, "uploads", st.uploads);
+	cJSON_AddNumberToObject(o, "packets", st.packets);
+	cJSON_AddNumberToObject(o, "selects", st.selects);
+	cJSON_AddNumberToObject(o, "clears", st.clears);
+	cJSON_AddNumberToObject(o, "resumes", st.resumes);
+	cJSON_AddNumberToObject(o, "header_errors", st.header_errors);
+	cJSON_AddNumberToObject(o, "brightness", st.brightness);
+	cJSON_AddBoolToObject(o, "power", st.power);
+	return send_json(req, NULL, o);
+}
+#endif
+
 // ---- Setup portal on port 80 ----
 
 static esp_err_t h_portal(httpd_req_t *req)
@@ -960,6 +1000,10 @@ static const route_t routes[] = {
 	{"/api/status", HTTP_GET, h_api_status},
 	{"/api/wifi/scan", HTTP_GET, h_api_scan},
 	{"/api/wifi/connect", HTTP_POST, h_api_wifi_connect},
+#if CONFIG_XY_QEMU
+	{"/api/sim/last", HTTP_GET, h_sim_last},
+	{"/api/sim/stats", HTTP_GET, h_sim_stats},
+#endif
 };
 
 esp_err_t http_start(void)

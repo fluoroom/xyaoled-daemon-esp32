@@ -4,16 +4,20 @@ Decisiones que tomé solo mientras no estabas. Cada una dice qué hice por
 defecto; respondé debajo de **Respuesta:** (alcanza con "ok" si te parece
 bien) y lo ajusto.
 
-Estado general al dejar esto: todo el firmware está escrito y compila, y
-la lógica pura (protocolo, subidas con acks, imágenes, parsers HTTP) pasa
-30 tests en la PC. Nada corrió todavía en la placa. Los commits son
-locales, no los pusheé (ver pregunta 1).
+Estado general al dejar esto: todo el firmware está escrito y compila. La
+lógica pura (protocolo, subidas con acks, imágenes, parsers HTTP) pasa 30
+tests en la PC, y el firmware completo corre en QEMU (con un panel
+simulado en lugar de BLE y Ethernet en lugar de Wi-Fi) y pasa 16 pruebas
+de integración contra la API real; los GIFs que recibe el panel coinciden
+con lo que genera el daemon Go. Lo que falta probar en la placa es lo que
+QEMU no emula: BLE con el panel de verdad, el Wi-Fi y el portal. Los
+commits son locales, no los pusheé (ver pregunta 1).
 
 ---
 
 ### 1. ¿Pusheo los commits?
 
-Hay 4 commits locales sobre `main` que no subí a
+Hay varios commits locales sobre `main` que no subí a
 `fluoroom/xyaoled-daemon-esp32`. La vez anterior me pediste commitear y
 pushear, pero eso fue para aquel cambio.
 

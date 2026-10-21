@@ -1,5 +1,11 @@
 menu "XYAOLED"
 
+    config XY_QEMU
+        bool "Build for QEMU (Ethernet instead of Wi-Fi, simulated panel instead of BLE)"
+        default n
+        help
+            Integration-test build: see firmware/test/qemu. Never flash it.
+
     config XY_WIFI_SSID
         string "Wi-Fi SSID"
         default ""

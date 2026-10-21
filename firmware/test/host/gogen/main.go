@@ -3,6 +3,8 @@
 //	go run . gen <dir>              write source images and the frames the Go daemon makes of them
 //	go run . verify <gif> <frames>  decode a GIF written by the C encoder with Go's image/gif and
 //	                                compare it with raw RGB frames
+//	go run . anim <w> <h> <n> <out> write an n-frame w×h animation to out.gif and the frames the Go
+//	                                daemon makes of it to out.rgb (for the QEMU volume test)
 //
 // The expected frames follow reference/go-daemon/display.go: animations
 // are composited at full size (processAnimatedGif) and every frame or still
@@ -36,6 +38,8 @@ func main() {
 		err = gen(os.Args[2])
 	case "verify":
 		err = verify(os.Args[2], os.Args[3])
+	case "anim":
+		err = longAnim(os.Args[2:])
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -323,6 +327,40 @@ func gen(dir string) error {
 		return err
 	}
 	return writeFrames(filepath.Join(dir, "photo"), []*image.RGBA{still(dec)}, []int{0})
+}
+
+// longAnim writes an n-frame animation of full frames and its expected
+// panel frames.
+func longAnim(args []string) error {
+	if len(args) != 4 {
+		return fmt.Errorf("anim <w> <h> <n> <out>")
+	}
+	var w, h, n int
+	fmt.Sscan(args[0], &w)
+	fmt.Sscan(args[1], &h)
+	fmt.Sscan(args[2], &n)
+	opaque := testPalette[:7]
+	g := &gif.GIF{Config: image.Config{ColorModel: opaque, Width: w, Height: h}}
+	for i := 0; i < n; i++ {
+		p := pattern(image.Rect(0, 0, w, h), i)
+		p.Palette = opaque
+		g.Image = append(g.Image, p)
+		g.Delay = append(g.Delay, 3)
+		g.Disposal = append(g.Disposal, gif.DisposalNone)
+	}
+	data, err := encodeGif(g)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(args[3]+".gif", data, 0o644); err != nil {
+		return err
+	}
+	src, err := gif.DecodeAll(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	frames, delays := animated(src)
+	return writeFrames(args[3], frames, delays)
 }
 
 // verify decodes a GIF with image/gif and compares its (full, opaque)
